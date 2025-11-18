@@ -4,6 +4,8 @@ require_once './1database_conn/connection.php';
 require 'PHPMailer-master/src/PHPMailer.php';
 require 'PHPMailer-master/src/SMTP.php';
 require 'PHPMailer-master/src/Exception.php';
+require_once __DIR__ . '/mail-config.php';
+require_once './helper/csrftoken.php';
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
@@ -39,81 +41,84 @@ $otp_email = $user['email'];
 $contact_number = $user['contact_number'] ?? '';
 
 // ✅ Handle OTP verification
-if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['verify_otp'])) {
-    $_SESSION['otp_attempts'] += 1;
-    $otp_input = trim($_POST['otp']);
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
-    if ($user && $otp_input == $user['otp_code'] && strtotime($user['otp_expiration']) > time()) {
-        // ✅ OTP Valid
-        $stmt = $conn->prepare("UPDATE users SET otp_verified = 'yes', otp_code = NULL, otp_expiration = NULL WHERE id = ?");
-        $stmt->bind_param("i", $userId);
-        $stmt->execute();
-        $stmt->close();
-
-        $_SESSION['otp_attempts'] = 0;
-        $_SESSION['user_id'] = $userId;
-        $_SESSION['role'] = $user['role']; // ✅ Store role for redirect
-        unset($_SESSION['temp_user_id']);
-        unset($_SESSION['otp_email']);
-
-        // ✅ Redirect to login-loading
-        header("Location: log-in-loading.php");
-        exit();
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+        $error = 'Invalid request. Please try again.';
     } else {
-        $error = "Invalid or expired OTP.";
-    }
-}
-
-// ✅ Handle Resend OTP with 30-second cooldown
-if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['resend_otp'])) {
-    $now = time();
-    if (!isset($_SESSION['otp_last_sent'])) $_SESSION['otp_last_sent'] = 0;
-
-    if ($now - $_SESSION['otp_last_sent'] < 30) {
-        $error = "Please wait " . (30 - ($now - $_SESSION['otp_last_sent'])) . " seconds before resending OTP.";
-    } else {
-        $method = $_POST['otp_method'] ?? 'email'; // default to email
-        $otp = rand(100000, 999999);
-        $expiry = date("Y-m-d H:i:s", strtotime("+5 minutes"));
-
-        $stmt = $conn->prepare("UPDATE users SET otp_code = ?, otp_expiration = ?, otp_verified = 'no' WHERE id = ?");
-        $stmt->bind_param("ssi", $otp, $expiry, $userId);
-        $stmt->execute();
-        $stmt->close();
-
-        if ($method === 'email') {
-            $mail = new PHPMailer();
-            $mail->isSMTP();
-            $mail->Host = 'smtp.gmail.com';
-            $mail->SMTPAuth = true;
-            $mail->Username = 'jemdaep@kld.edu.ph'; // 🔒 Replace
-            $mail->Password = 'zxcn uabv tucw qrsd';   // 🔒 App password
-            $mail->SMTPSecure = 'tls';
-            $mail->Port = 587;
-
-            $mail->setFrom('jemdaep@kld.edu.ph', 'Evaluation System');
-            $mail->addAddress($otp_email);
-            $mail->isHTML(true);
-            $mail->Subject = 'Your OTP Code';
-            $mail->Body = "
-                <div style='font-family:sans-serif;'>
-                    <h2>One-Time Password (OTP)</h2>
-                    <p>Hi <b>{$user['fullName']}</b>,</p>
-                    <p>Your OTP code is: <b style='font-size:20px;'>$otp</b></p>
-                    <p>This code will expire in <b>5 minutes</b>.</p>
-                </div>";
-            if ($mail->send()) {
-                $_SESSION['otp_last_sent'] = $now;
-                $success = "A new OTP has been sent to your email.";
-            } else {
-                $error = "Failed to send OTP email. Please try again later.";
-            }
-        } elseif ($method === 'sms') {
-            // Simulate SMS sending
-            $_SESSION['otp_last_sent'] = $now;
-            $success = "A new OTP has been sent to your phone number $contact_number.";
+        if (isset($_POST['verify_otp'])) {
+            $_SESSION['otp_attempts'] += 1;
+            $otp_input = trim($_POST['otp']);
+        if ($user && $otp_input == $user['otp_code'] && strtotime($user['otp_expiration']) > time()) {
+            // ✅ OTP Valid
+            $stmt = $conn->prepare("UPDATE users SET otp_verified = 'yes', otp_code = NULL, otp_expiration = NULL WHERE id = ?");
+            $stmt->bind_param("i", $userId);
+            $stmt->execute();
+            $stmt->close();
+            $_SESSION['otp_attempts'] = 0;
+            $_SESSION['user_id'] = $userId;
+            $_SESSION['role'] = $user['role']; // ✅ Store role for redirect
+            unset($_SESSION['temp_user_id']);
+            unset($_SESSION['otp_email']);
+            // ✅ Redirect to login-loading
+            header("Location: log-in-loading.php");
+            exit();
+        } else {
+            $error = "Invalid or expired OTP.";
         }
     }
+    // ✅ Handle Resend OTP with 30-second cooldown
+    if (isset($_POST['resend_otp'])) {
+        $now = time();
+        if (!isset($_SESSION['otp_last_sent'])) $_SESSION['otp_last_sent'] = 0;
+
+            if ($now - $_SESSION['otp_last_sent'] < 30) {
+                $error = "Please wait " . (30 - ($now - $_SESSION['otp_last_sent'])) . " seconds before resending OTP.";
+            } else {
+                $method = $_POST['otp_method'] ?? 'email'; // default to email
+                $otp = rand(100000, 999999);
+                $expiry = date("Y-m-d H:i:s", strtotime("+5 minutes"));
+                $stmt = $conn->prepare("UPDATE users SET otp_code = ?, otp_expiration = ?, otp_verified = 'no' WHERE id = ?");
+                $stmt->bind_param("ssi", $otp,  $expiry, $userId);
+                $stmt->execute();
+                $stmt->close();
+
+                if ($method === 'email') {
+                    $mail = new PHPMailer();
+                    $mail->isSMTP();
+                    $mail->Host = 'smtp.gmail.com';
+                    $mail->SMTPAuth = true;
+                    $mail->Username = MAIL_USER; // 🔒 Replace
+                    $mail->Password = MAIL_PASS;   // 🔒 App password
+                    $mail->SMTPSecure = 'tls';
+                    $mail->Port = 587;
+
+                    $mail->setFrom(MAIL_USER, MAIL_FROM_NAME);
+                    $mail->addAddress($otp_email);
+                    $mail->isHTML(true);
+                    $mail->Subject = 'Your OTP Code';
+                    $mail->Body = "
+                        <div style='font-family:sans-serif;'>
+                            <h2>One-Time Password (OTP)</h2>
+                            <p>Hi <b>{$user['fullName']}</b>,</p>
+                            <p>Your OTP code is: <b style='font-size:20px;'>$otp</b></p>
+                            <p>This code will expire in <b>5 minutes</b>.</p>
+                        </div>";
+                    if ($mail->send()) {
+                        $_SESSION['otp_last_sent'] = $now;
+                        $success = "A new OTP has been sent to your email.";
+                    } else {
+                        $error = "Failed to send OTP email. Please try again later.";
+                    }
+                } elseif ($method === 'sms') {
+                    // Simulate SMS sending
+                    $_SESSION['otp_last_sent'] = $now;
+                    $success = "A new OTP has been sent to your phone number $contact_number.";
+                }
+            }
+        }
+    }
+    generate_csrf_token();
 }
 ?>
 
@@ -156,6 +161,7 @@ window.onload = startCooldown;
 <body>
 
 <form class="login-container" method="POST" action="">
+    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
     <div class="login-header">
         <img src="assets/img/logo-small.png" alt="Logo" class="login-logo">
         <h1 class="system-title">Administrator Evaluation System</h1>

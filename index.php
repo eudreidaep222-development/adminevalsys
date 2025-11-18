@@ -3,6 +3,8 @@ session_start();
 require_once './1database_conn/connection.php';
 require_once './Authentication/checkAuth.php';
 require_once './helper/log_action.php';
+require_once __DIR__ . '/mail-config.php';
+require_once './helper/csrftoken.php';
 require 'PHPMailer-master/src/PHPMailer.php';
 require 'PHPMailer-master/src/SMTP.php';
 require 'PHPMailer-master/src/Exception.php';
@@ -22,84 +24,88 @@ if ($conn->connect_error) {
 $error_message = "";
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    $username = trim($_POST['username'] ?? '');
-    $password = trim($_POST['password'] ?? '');
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+        $error_message = 'Invalid request. Please try again.';
+    }else{ 
+        $username = trim($_POST['username'] ?? '');
+        $password = trim($_POST['password'] ?? '');
+        if (!empty($username) && !empty($password)) {
+            $stmt = $conn->prepare("SELECT id, fullName, email, password, status, role, account_locked, archived, contact_number 
+                                    FROM users 
+                                    WHERE email = ?");
+            $stmt->bind_param("s", $username);
+            $stmt->execute();
+            $result = $stmt->get_result();
 
-    if (!empty($username) && !empty($password)) {
-        $stmt = $conn->prepare("SELECT id, fullName, email, password, status, role, account_locked, archived, contact_number 
-                                FROM users 
-                                WHERE email = ?");
-        $stmt->bind_param("s", $username);
-        $stmt->execute();
-        $result = $stmt->get_result();
+            if ($result->num_rows > 0) {
+                $row = $result->fetch_assoc();
 
-        if ($result->num_rows > 0) {
-            $row = $result->fetch_assoc();
-
-            if (password_verify($password, $row['password'])) {
-                // 🔒 Account restriction checks
-                if (strtolower($row['status']) !== 'active') {
-                    log_login_attempt($conn, $row['email'], 'failed', $row['id'], 'Account not active');
-                    $error_message = "Your account is currently <b>" . htmlspecialchars($row['status']) . "</b>. Please contact the administrator.";
-                } elseif (!empty($row['account_locked']) && $row['account_locked'] == 1) {
-                    log_login_attempt($conn, $row['email'], 'failed', $row['id'], 'Account locked');
-                    $error_message = "Your account is <b>locked</b> due to multiple failed login attempts. Please contact the administrator.";
-                } elseif (!empty($row['archived']) && $row['archived'] == 1) {
-                    log_login_attempt($conn, $row['email'], 'failed', $row['id'], 'Account archived');
-                    $error_message = "Your account has been <b>archived</b>. Please contact the administrator.";
-                } else {
-                    // ✅ Step 1: Generate OTP
-                    $otp = rand(100000, 999999);
-                    $expiry = date("Y-m-d H:i:s", strtotime("+5 minutes"));
-                    $stmt = $conn->prepare("UPDATE users SET otp_code = ?, otp_expiration = ?, otp_verified = 'no' WHERE id = ?");
-                    $stmt->bind_param("ssi", $otp, $expiry, $row['id']);
-                    $stmt->execute();
-
-                    // ✅ Step 2: Send OTP via Email (PHPMailer)
-                    $mail = new PHPMailer();
-                    $mail->isSMTP();
-                    $mail->Host = 'smtp.gmail.com';
-                    $mail->SMTPAuth = true;
-                    $mail->Username = 'jemdaep@kld.edu.ph'; // 🔒 Replace
-                    $mail->Password = 'zxcn uabv tucw qrsd';   // 🔒 App password, not account password
-                    $mail->SMTPSecure = 'tls';
-                    $mail->Port = 587;
-
-                    $mail->setFrom('jemdaep@kld.edu.ph', 'Evaluation System');
-                    $mail->addAddress($row['email']);
-                    $mail->isHTML(true);
-                    $mail->Subject = 'Your OTP Code';
-                    $mail->Body = "
-                        <div style='font-family:sans-serif;'>
-                            <h2>One-Time Password (OTP)</h2>
-                            <p>Hi <b>{$row['fullName']}</b>,</p>
-                            <p>Your OTP code is: <b style='font-size:20px;'>$otp</b></p>
-                            <p>This code will expire in <b>5 minutes</b>.</p>
-                        </div>";
-
-                    if ($mail->send()) {
-                        $_SESSION['temp_user_id'] = $row['id'];
-                        $_SESSION['otp_email'] = $row['email'];
-                        header("Location: verify-otp.php");
-                        exit();
+                if (password_verify($password, $row['password'])) {
+                    // 🔒 Account restriction checks
+                    if (strtolower($row['status']) !== 'active') {
+                        log_login_attempt($conn, $row['email'], 'failed', $row['id'], 'Account not active');
+                        $error_message = "Your account is currently <b>" . htmlspecialchars($row['status']) . "</b>. Please contact the administrator.";
+                    } elseif (!empty($row['account_locked']) && $row['account_locked'] == 1) {
+                        log_login_attempt($conn, $row['email'], 'failed', $row['id'], 'Account locked');
+                        $error_message = "Your account is <b>locked</b> due to multiple failed login attempts. Please contact the administrator.";
+                    } elseif (!empty($row['archived']) && $row['archived'] == 1) {
+                        log_login_attempt($conn, $row['email'], 'failed', $row['id'], 'Account archived');
+                        $error_message = "Your account has been <b>archived</b>. Please contact the administrator.";
                     } else {
-                        $error_message = "Failed to send OTP. Please try again later.";
+                        // ✅ Step 1: Generate OTP
+                        $otp = rand(100000, 999999);
+                        $expiry = date("Y-m-d H:i:s", strtotime("+5 minutes"));
+                        $stmt = $conn->prepare("UPDATE users SET otp_code = ?, otp_expiration = ?, otp_verified = 'no' WHERE id = ?");
+                        $stmt->bind_param("ssi", $otp, $expiry, $row['id']);
+                        $stmt->execute();
+
+                        // ✅ Step 2: Send OTP via Email (PHPMailer)
+                        $mail = new PHPMailer();
+                        $mail->isSMTP();
+                        $mail->Host = 'smtp.gmail.com';
+                        $mail->SMTPAuth = true;
+                        $mail->Username = MAIL_USER; // 🔒 Replace
+                        $mail->Password = MAIL_PASS;   // 🔒 App password, not account password
+                        $mail->SMTPSecure = 'tls';
+                        $mail->Port = 587;
+                        $mail->setFrom(MAIL_USER, MAIL_FROM_NAME);
+                        $mail->addAddress($row['email']);
+                        $mail->isHTML(true);
+                        $mail->Subject = 'Your OTP Code';
+                        $mail->Body = "
+                            <div style='font-family:sans-serif;'>
+                                <h2>One-Time Password (OTP)</h2>
+                                <p>Hi <b>{$row['fullName']}</b>,</p>
+                                <p>Your OTP code is: <b style='font-size:20px;'>$otp</b></p>
+                                <p>This code will expire in <b>5 minutes</b>.</p>
+                            </div>";
+
+                        if ($mail->send()) {
+                            $_SESSION['temp_user_id'] = $row['id'];
+                            $_SESSION['otp_email'] = $row['email'];
+                            header("Location: verify-otp.php");
+                            exit();
+                        } else {
+                            $error_message = "Failed to send OTP. Please try again later.";
+                        }
                     }
+                } else {
+                    log_login_attempt($conn, $username, 'failed', $row['id'], 'Incorrect password');
+                    $error_message = "Invalid username or password.";
                 }
             } else {
-                log_login_attempt($conn, $username, 'failed', $row['id'], 'Incorrect password');
+                log_login_attempt($conn, $username, 'failed', null, 'Email not found');
                 $error_message = "Invalid username or password.";
             }
-        } else {
-            log_login_attempt($conn, $username, 'failed', null, 'Email not found');
-            $error_message = "Invalid username or password.";
-        }
 
-        $stmt->close();
-    } else {
-        $error_message = "All fields are required.";
+            $stmt->close();
+        }else{
+            $error_message = "All fields are required.";
+        }
     }
 }
+
+generate_csrf_token();
 
 $conn->close();
 ?>
@@ -117,6 +123,7 @@ $conn->close();
 <body>
 
 <form class="login-container" method="POST" action="">
+    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token']); ?>">
     <div class="login-header">
         <img src="assets/img/logo-small.png" alt="Logo" class="login-logo">
         <h1 class="system-title">Administrator Evaluation System</h1>
