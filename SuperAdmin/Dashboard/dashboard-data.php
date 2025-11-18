@@ -1,5 +1,10 @@
 <?php
 require_once '../../1database_conn/connection.php';
+if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'administrator') {
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'Unauthorized access']);
+    exit();
+}
 
 $deptId = isset($_GET['department_id']) ? intval($_GET['department_id']) : null;
 

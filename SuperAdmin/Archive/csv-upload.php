@@ -20,6 +20,10 @@
         <?php
         include '../../Layout Components/header.php';
         include '../../Layout Components/sidebar.php';
+        if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+            echo json_encode(["status" => "error", "message" => "Unauthorized access."]);
+            exit();
+        }
         ?>
 
         <div class="page-wrapper">

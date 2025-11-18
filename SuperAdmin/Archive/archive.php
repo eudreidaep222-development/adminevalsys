@@ -1,9 +1,8 @@
 <?php
 session_start();
-if ($_SESSION['user_role'] !== 'Super Admin') {
-    // Redirect or show an error message
-    header('Location: /no-access.php');
-    exit;
+if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+    echo json_encode(["status" => "error", "message" => "Unauthorized access."]);
+    exit();
 }
 ?>
 
