@@ -1,218 +1,279 @@
 <?php
+session_start();
 include '../../1database_conn/connection.php';
 
-$detailsQuery = $conn->query("
-    SELECT ea.id as assignment_id, 
-           ea.form_id,
-           u1.fullName as evaluator, 
-           u2.fullName as evaluatee,
-           d.department_name as department, 
-           f.form_name as form,
-           ea.assigned_at
-    FROM evaluation_assignments ea
-    LEFT JOIN users u1 ON ea.evaluator_id=u1.id
-    LEFT JOIN users u2 ON ea.evaluatee_id=u2.id
-    LEFT JOIN departments d ON ea.department_id=d.id
-    LEFT JOIN evaluation_forms f ON ea.form_id=f.id
-    WHERE ea.status = 'completed'
-");
-
-
-$details = [];
-while($row = $detailsQuery->fetch_assoc()){
-    $form_id = $row['form_id'] ?? 0; // ensure it's set
-    $categories = [];
-
-    if($form_id){
-        $categoriesQuery = $conn->query("
-            SELECT ec.id as category_id, ec.category_name, ec.category_percentage
-            FROM evaluation_categories ec
-            WHERE ec.form_id = $form_id
-        ");
-
-        while($cat = $categoriesQuery->fetch_assoc()){
-            $category_id = $cat['category_id'] ?? 0;
-            $details2 = [];
-
-            if($category_id){
-                $detailsQuery2 = $conn->query("
-                    SELECT output_name as output, success_indicator, accomplishment, 
-                           q_rating as q, e_rating as e, t_rating as t, a_rating as a
-                    FROM evaluation_form_details
-                    WHERE category_id = $category_id
-                ");
-                while($d = $detailsQuery2->fetch_assoc()){
-                    $details2[] = $d;
-                }
-            }
-
-            $categories[] = [
-                'category_id' => $category_id,
-                'category_name' => $cat['category_name'],
-                'percentage' => $cat['category_percentage'],
-                'details' => $details2
-            ];
-        }
-    }
-
-    $details[] = [
-        'assignment_id' => $row['assignment_id'],
-        'evaluator' => $row['evaluator'],
-        'evaluatee' => $row['evaluatee'],
-        'department' => $row['department'],
-        'form' => $row['form'],
-        'assigned_at' => $row['assigned_at'],
-        'categories' => $categories,
-        'actions' => '<button class="btn btn-sm btn-info" onclick="overviewForm('.$row['assignment_id'].')">Overview</button>
-                      <button class="btn btn-sm btn-primary" onclick="viewPDF('.$row['assignment_id'].')">PDF</button>'
-    ];
+if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+    header("Location: ../../index.php"); 
+    exit();
 }
 
+$toastr = null;
+if (isset($_SESSION['toastr'])) {
+    $toastr = $_SESSION['toastr'];
+    unset($_SESSION['toastr']);
+}
+
+// 1. INPUTS
+$dept_filter  = $_GET['dept_filter'] ?? '';
+$school_year  = $_GET['school_year'] ?? '';
+$semester     = $_GET['semester'] ?? '';
+$sort_order   = $_GET['sort_order'] ?? ''; // New Filter
+
+$schoolYears = [];
+$semesters   = [];
+
+// Get School Years
+$syResult = $conn->query("SELECT DISTINCT school_year FROM academic_list ORDER BY school_year DESC");
+if ($syResult) {
+    while ($row = $syResult->fetch_assoc()) {
+        $schoolYears[] = $row['school_year'];
+    }
+}
+
+// Get Semesters
+if ($school_year) {
+    $stmt = $conn->prepare("SELECT DISTINCT semester FROM academic_list WHERE school_year=? ORDER BY id ASC");
+    $stmt->bind_param("s", $school_year);
+    $stmt->execute();
+    $semResult = $stmt->get_result();
+} else {
+    $semResult = $conn->query("SELECT DISTINCT semester FROM academic_list ORDER BY id ASC");
+}
+
+while ($row = $semResult->fetch_assoc()) {
+    $semesters[] = $row['semester'];
+}
+
+// 2. HELPER FUNCTION: Get Rating Description
+function getRatingDescription($score) {
+    if (!$score) return 'N/A';
+    if ($score >= 4.50) return 'Outstanding (O)';
+    if ($score >= 3.50) return 'Very Satisfactory (VS)';
+    if ($score >= 2.50) return 'Satisfactory (S)';
+    if ($score >= 1.50) return 'Unsatisfactory (US)';
+    return 'Poor (P)';
+}
+
+// 3. MAIN QUERY
+$sql = "SELECT 
+            u.id AS admin_id,
+            CONCAT(
+                u.first_name, ' ',
+                IF(u.middle_name IS NOT NULL AND u.middle_name != '', CONCAT(u.middle_name, ' '), ''),
+                u.last_name
+            ) AS admin_name,
+            d.department_name,
+            ea.id AS archive_id,
+            ea.avg_score,
+            ea.file_path,
+            ea.date_generated,
+            ea.date_sent
+        FROM users u
+        JOIN departments d ON d.id = u.department_id
+        JOIN evaluation_assignments eas ON eas.evaluatee_id = u.id
+        LEFT JOIN evaluation_archives ea 
+            ON ea.administrator_id = u.id 
+           AND ea.school_year = ?
+           AND ea.semester = ?
+        WHERE eas.status = 'completed'";
+
+if ($dept_filter) {
+    $sql .= " AND u.department_id = '$dept_filter'";
+}
+
+$sql .= " GROUP BY u.id";
+
+// 4. SORTING LOGIC
+switch ($sort_order) {
+    case 'score_desc':
+        $sql .= " ORDER BY ea.avg_score DESC";
+        break;
+    case 'score_asc':
+        $sql .= " ORDER BY ea.avg_score ASC";
+        break;
+    default:
+        $sql .= " ORDER BY admin_name ASC";
+        break;
+}
+
+$stmt = $conn->prepare($sql);
+$stmt->bind_param("ss", $school_year, $semester);
+$stmt->execute();
+$result = $stmt->get_result();
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reports Module</title>
-<link rel="shortcut icon" href="../../assets/img/logo-small.png">
-<link href="https://fonts.googleapis.com/css2?family=Roboto&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../../assets/plugins/bootstrap/css/bootstrap.min.css">
-<link rel="stylesheet" href="../../assets/plugins/fontawesome/css/all.min.css">
-<link rel="stylesheet" href="../../assets/css/style.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
+    <meta charset="utf-8">
+    <title>Reports Module</title>
+    <link rel="shortcut icon" href="../../assets/img/logo-small.png">
+    <link rel="stylesheet" href="../../assets/plugins/bootstrap/css/bootstrap.min.css">
+    <link rel="stylesheet" href="../../assets/plugins/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="../../assets/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
 </head>
 <body>
 <div class="main-wrapper">
-<?php
-include '../../Layout Components/header.php';
-include '../../Layout Components/sidebar.php';
-?>
+<?php include '../../Layout Components/header.php'; ?>
+<?php include '../../Layout Components/sidebar.php'; ?>
 
 <div class="page-wrapper">
     <div class="content container-fluid">
-        <!-- Page Header -->
+        
         <div class="page-header">
-            <div class="row">
-                <div class="col-sm-12">
-                    <div class="page-sub-header">
-                        <h3 class="page-title">Reports Module</h3>
-                        <div class="toolbar">
-                            <button class="tool-btn" title="Refresh" id="refreshReports">
-                                <i class="fas fa-sync-alt"></i>
-                            </button>
-                            <select class="tool-select" id="departmentFilter">
-                                <option value="">All Departments</option>
-                                <?php
-                                $departments = $conn->query("SELECT id, department_name FROM departments ORDER BY department_name ASC");
-                                while($dept = $departments->fetch_assoc()):
-                                ?>
-                                <option value="<?= $dept['id'] ?>"><?= htmlspecialchars($dept['department_name']) ?></option>
-                                <?php endwhile; ?>
-                            </select>
-                            <select class="tool-select" id="semesterFilter">
-                                <option value="">All Academic Periods</option>
-                                <?php
-                                $semesters = $conn->query("SELECT * FROM academic_list ORDER BY start_date ASC");
-                                while($sem = $semesters->fetch_assoc()):
-                                ?>
-                                <option value="<?= $sem['id'] ?>">S.Y. <?= $sem['school_year'] ?> • Sem <?= $sem['semester'] ?></option>
-                                <?php endwhile; ?>
-                            </select>
-                            <select class="tool-select" id="formFilter">
-                                <option value="">All Forms</option>
-                                <?php
-                                $forms = $conn->query("SELECT id, form_name FROM evaluation_forms WHERE is_active=1 ORDER BY form_name ASC");
-                                while($form = $forms->fetch_assoc()):
-                                ?>
-                                <option value="<?= $form['id'] ?>"><?= htmlspecialchars($form['form_name']) ?></option>
-                                <?php endwhile; ?>
-                            </select>
+            <div class="row align-items-center">
+                <div class="col">
+                    <h3 class="page-title">Evaluation Reports</h3>
+                    <ul class="breadcrumb">
+                        <li class="breadcrumb-item"><a href="index.php">Dashboard</a></li>
+                        <li class="breadcrumb-item active">Reports</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <form method="GET" class="row g-3">
+                    <div class="col-md-3">
+                        <label class="form-label">School Year</label>
+                        <select name="school_year" class="form-select" onchange="this.form.submit()">
+                            <option value="">Choose...</option>
+                            <?php foreach ($schoolYears as $sy): ?>
+                                <option value="<?= htmlspecialchars($sy) ?>" <?= ($school_year == $sy) ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($sy) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Semester</label>
+                        <select name="semester" class="form-select">
+                            <option value="">Choose...</option>
+                            <?php foreach ($semesters as $sem): ?>
+                                <option value="<?= htmlspecialchars($sem) ?>" <?= ($semester == $sem) ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($sem) ?><?= is_numeric($sem) ? ($sem == 1 ? 'st Sem' : 'nd Sem') : '' ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="col-md-3">
+                        <label class="form-label">Department</label>
+                        <select name="dept_filter" class="form-select">
+                            <option value="">All Departments</option>
+                            <?php
+                            $depts = $conn->query("SELECT * FROM departments ORDER BY department_name ASC");
+                            while ($d = $depts->fetch_assoc()):
+                                $sel = $dept_filter == $d['id'] ? 'selected' : '';
+                            ?>
+                                <option value="<?= $d['id'] ?>" <?= $sel ?>><?= $d['department_name'] ?></option>
+                            <?php endwhile; ?>
+                        </select>
+                    </div>
+
+                    <div class="col-md-2">
+                        <label class="form-label">Sort Score</label>
+                        <select name="sort_order" class="form-select">
+                            <option value="">Default (Name)</option>
+                            <option value="score_desc" <?= $sort_order == 'score_desc' ? 'selected' : '' ?>>Highest to Lowest</option>
+                            <option value="score_asc" <?= $sort_order == 'score_asc' ? 'selected' : '' ?>>Lowest to Highest</option>
+                        </select>
+                    </div>
+
+                    <div class="col-md-2 align-self-end">
+                        <button type="submit" class="btn btn-primary w-100">Filter</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-sm-12">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover table-center mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Administrator</th>
+                                        <th>Department</th>
+                                        <th>Calculated Score</th>
+                                        <th>Rating</th> <th>Status</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                <?php if ($result->num_rows > 0): ?>
+                                    <?php while ($row = $result->fetch_assoc()): ?>
+                                    <tr>
+                                        <td>
+                                            <h2 class="table-avatar">
+                                                <a href="#"><?= $row['admin_name'] ?></a>
+                                            </h2>
+                                        </td>
+                                        <td><?= $row['department_name'] ?></td>
+                                        <td>
+                                            <?php 
+                                            if ($row['avg_score']) {
+                                                echo '<span class="badge bg-primary" style="font-size:1em;">'.number_format($row['avg_score'], 2).'</span>';
+                                            } else {
+                                                echo '<span class="text-muted">--</span>';
+                                            }
+                                            ?>
+                                        </td>
+                                        <td>
+                                            <small class="text-muted"><?= getRatingDescription($row['avg_score']) ?></small>
+                                        </td>
+
+                                        <td>
+                                            <?php
+                                            if ($row['date_sent']) {
+                                                echo '<span class="badge bg-success">Sent</span>';
+                                            } elseif ($row['date_generated']) {
+                                                echo '<span class="badge bg-warning text-dark">Generated</span>';
+                                            } else {
+                                                echo '<span class="badge bg-secondary">Pending</span>';
+                                            }
+                                            ?>
+                                        </td>
+                                        <td class="text-end"> 
+                                            <form action="generate_pdf.php" method="POST" target="_blank" style="display:inline;">
+                                                <input type="hidden" name="admin_id" value="<?= $row['admin_id'] ?>">
+                                                <input type="hidden" name="school_year" value="<?= $school_year ?>">
+                                                <input type="hidden" name="semester" value="<?= $semester ?>">
+                                                
+                                                <button type="button" class="btn btn-sm btn-outline-danger btn-check-pdf" title="Generate Secure PDF">
+                                                    <i class="fas fa-file-pdf"></i> <?= $row['file_path'] ? 'Regenerate PDF' : 'Generate PDF' ?>
+                                                </button>
+                                            </form>
+
+                                            <form action="send_email.php" method="POST" style="display:inline;">
+                                                <input type="hidden" name="admin_id" value="<?= $row['admin_id'] ?>">
+                                                <input type="hidden" name="school_year" value="<?= $school_year ?>">
+                                                <input type="hidden" name="semester" value="<?= $semester ?>">
+                                                
+                                                <button type="button" 
+                                                        class="btn btn-sm btn-outline-success btn-send-email" 
+                                                        title="Send Email"
+                                                        data-generated="<?= !empty($row['file_path']) ? '1' : '0' ?>">
+                                                    <i class="fas fa-paper-plane"></i>
+                                                </button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                    <?php endwhile; ?>
+                                <?php else: ?>
+                                    <tr><td colspan="6" class="text-center">No evaluations found.</td></tr>
+                                <?php endif; ?>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
-
-        <!-- Summary Cards -->
-        <div class="row">
-            <div class="col-md-3">
-                <div class="card bg-comman">
-                    <div class="card-body">
-                        <h6>Total Completed Evaluations</h6>
-                        <h3 id="totalCompleted">0</h3>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-comman">
-                    <div class="card-body">
-                        <h6>Average Performance</h6>
-                        <h3 id="avgPerformance">0</h3>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-comman">
-                    <div class="card-body">
-                        <h6>Departments Covered</h6>
-                        <h3 id="deptCount">0</h3>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Charts -->
-        <div class="row mt-4">
-            <div class="col-md-6">
-                <div class="card card-chart">
-                    <div class="card-header"><h5>Department-wise Average Scores</h5></div>
-                    <div class="card-body"><div id="deptChart"></div></div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card card-chart">
-                    <div class="card-header"><h5>Evaluation Trends Over Semesters</h5></div>
-                    <div class="card-body"><div id="trendChart"></div></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Detailed Table -->
-        <div class="row mt-4">
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header"><h5>Detailed Evaluations</h5></div>
-                    <div class="card-body">
-                        <table class="table table-bordered" id="reportTable">
-                            <thead>
-                                <tr>
-                                    <th>Evaluator</th>
-                                    <th>Evaluatee</th>
-                                    <th>Department</th>
-                                    <th>Form</th>
-                                    <th>Assigned At</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Overview Modal -->
-        <div class="modal fade" id="overviewModal" tabindex="-1" aria-hidden="true">
-          <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h5 class="modal-title">Evaluation Overview</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-              </div>
-              <div class="modal-body" id="overviewContent"></div>
-            </div>
-          </div>
         </div>
 
     </div>
@@ -223,170 +284,104 @@ include '../../Layout Components/sidebar.php';
 
 <script src="../../assets/js/jquery-3.6.0.min.js"></script>
 <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
-<script src="../../assets/plugins/slimscroll/jquery.slimscroll.min.js"></script>
-<script src="../../assets/plugins/apexchart/apexcharts.min.js"></script>
-<script src="../../assets/plugins/simple-calendar/jquery.simple-calendar.js"></script>
-<script src="../../assets/js/calander.js"></script>
-<script src="../../assets/js/script.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
-<script src="../../assets/js/alert-toast.js"></script>
+<script>
+$(document).ready(function() {
+    toastr.options = { "closeButton": true, "progressBar": true, "positionClass": "toast-top-right", "timeOut": "5000" };
+    <?php if ($toastr): ?>
+        var type = "<?= $toastr['type'] ?>";
+        var message = "<?= addslashes($toastr['message']) ?>";
+        if (type === 'success') toastr.success(message);
+        else if (type === 'error') toastr.error(message);
+        else if (type === 'warning') toastr.warning(message);
+    <?php endif; ?>
+});
+</script>
 
 <script>
-const details = <?= json_encode($details) ?>;
+$(document).ready(function() {
+    // Intercept clicks on the PDF button to check validity first
+    $('.btn-check-pdf').on('click', function(e) {
+        e.preventDefault(); 
+        
+        var $btn = $(this);
+        var $form = $btn.closest('form');
+        var formData = $form.serialize() + '&check_only=1'; // Send the pre-check signal
 
-document.addEventListener("DOMContentLoaded", function() {
-    const deptSelect = document.getElementById('departmentFilter');
-    const semSelect = document.getElementById('semesterFilter');
-    const formSelect = document.getElementById('formFilter');
-    let charts = {};
+        $btn.prop('disabled', true); // Prevent double clicks
 
-    function loadReports() {
-        const dept = deptSelect.value;
-        const sem = semSelect.value;
-        const form = formSelect.value;
+        $.post('generate_pdf.php', formData, function(response) {
+            $btn.prop('disabled', false);
 
-        fetch(`reports-data.php?department_id=${dept}&semesterFilter=${sem}&formFilter=${form}`)
-        .then(res => res.json())
-        .then(data => {
-            if (data.error) { toastr.error(data.error); return; }
-
-            // Summary
-            document.getElementById('totalCompleted').textContent = data.totalCompleted ?? 0;
-            document.getElementById('avgPerformance').textContent = data.avgScore ?? 0;
-            document.getElementById('deptCount').textContent = data.deptCount ?? 0;
-
-            // Charts
-            if (!charts.deptChart) {
-                charts.deptChart = new ApexCharts(document.querySelector("#deptChart"), {
-                    chart: { type: 'bar', height: 320 },
-                    series: [{ name: 'Avg Score', data: data.deptScores ?? [] }],
-                    xaxis: { categories: data.deptLabels ?? [] },
-                    colors: ['#33c1ff'],
-                    dataLabels: { enabled: true }
-                });
-                charts.deptChart.render();
+            if (response.status === 'success') {
+                // If check passes, submit the form normally to download file
+                $form[0].submit(); 
+                toastr.success("Downloading Report...");
             } else {
-                charts.deptChart.updateSeries([{ name: 'Avg Score', data: data.deptScores ?? [] }]);
-                charts.deptChart.updateOptions({ xaxis: { categories: data.deptLabels ?? [] } });
+                // If check fails, show Toastr warning WITHOUT opening a new tab
+                toastr.warning(response.message, "Validation Failed");
             }
-
-            if (!charts.trendChart) {
-                charts.trendChart = new ApexCharts(document.querySelector("#trendChart"), {
-                    chart: { type: 'line', height: 320 },
-                    series: [{ name: 'Avg Score', data: data.trendScores ?? [] }],
-                    xaxis: { categories: data.trendLabels ?? [] },
-                    colors: ['#008000'],
-                    stroke: { curve: 'smooth', width: 3 },
-                    markers: { size: 5 }
-                });
-                charts.trendChart.render();
-            } else {
-                charts.trendChart.updateSeries([{ name: 'Avg Score', data: data.trendScores ?? [] }]);
-                charts.trendChart.updateOptions({ xaxis: { categories: data.trendLabels ?? [] } });
-            }
-
-            // Detailed Table
-            const tbody = document.querySelector('#reportTable tbody');
-            tbody.innerHTML = '';
-            if (Array.isArray(data.details)) {
-                data.details.forEach(row => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>${row.evaluator}</td>
-                        <td>${row.evaluatee}</td>
-                        <td>${row.department}</td>
-                        <td>${row.form}</td>
-                        <td>${row.assigned_at}</td>
-                        <td>${row.actions}</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-            }
-
-        })
-        .catch(err => { toastr.error("Failed to load reports"); console.error(err); });
-    }
-
-    deptSelect.addEventListener('change', loadReports);
-    semSelect.addEventListener('change', loadReports);
-    formSelect.addEventListener('change', loadReports);
-    document.getElementById('refreshReports').addEventListener('click', loadReports);
-
-    loadReports();
-});
-
-function escapeHtml(str){
-    if(!str) return '';
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-}
-
-function overviewForm(assignmentId) {
-    fetch(`overview-data.php?assignment_id=${assignmentId}`)
-    .then(res => res.json())
-    .then(data => {
-        if (data.error) {
-            toastr.error(data.error);
-            return;
-        }
-        const ass = data.assignment;
-        const categories = data.categories;
-        const results = data.results;
-
-        let html = `<p><strong>Evaluator:</strong> ${escapeHtml(ass.evaluator)}<br>
-                    <strong>Evaluatee:</strong> ${escapeHtml(ass.evaluatee)}<br>
-                    <strong>Department:</strong> ${escapeHtml(ass.department_name)}<br>
-                    <strong>Form:</strong> ${escapeHtml(ass.form_name)}<br>
-                    <small>Submitted At: ${results.length ? escapeHtml(results[0].submitted_at) : 'N/A'}</small></p><hr/>`;
-
-        // Show form details with scores aligned per row
-        categories.forEach(cat => {
-            html += `<h5>${escapeHtml(cat.category_name)} (${cat.percentage}%)</h5>`;
-            html += `<div class="table-responsive"><table class="table table-bordered"><thead>
-                        <tr>
-                            <th>Output</th>
-                            <th>Success Indicator</th>
-                            <th>Actual Accomplishment</th>
-                            <th class="qeta">Q</th>
-                            <th class="qeta">E</th>
-                            <th class="qeta">T</th>
-                            <th class="qeta">A</th>
-                        </tr>
-                     </thead><tbody>`;
-
-            cat.details.forEach((d, index) => {
-                // Get corresponding result row if available
-                const r = results[index] || { q: '', e: '', t: '', a: '' };
-                html += `<tr>
-                            <td>${escapeHtml(d.output_name)}</td>
-                            <td>${escapeHtml(d.success_indicator)}</td>
-                            <td>${escapeHtml(d.accomplishment)}</td>
-                            <td class="qeta">${r.q}</td>
-                            <td class="qeta">${r.e}</td>
-                            <td class="qeta">${r.t}</td>
-                            <td class="qeta">${r.a}</td>
-                         </tr>`;
-            });
-
-            html += `</tbody></table></div>`;
+        }, 'json')
+        .fail(function() {
+            $btn.prop('disabled', false);
+            toastr.error("Server connection error.");
         });
-
-        $('#overviewContent').html(html);
-        new bootstrap.Modal(document.getElementById('overviewModal')).show();
-    })
-    .catch(err => {
-        toastr.error("Failed to load overview");
-        console.error(err);
     });
-}
-
-function viewPDF(assignmentId){
-    window.open('generate_pdf.php?assignment_id='+assignmentId, '_blank');
-}
+});
 </script>
+
+<script>
+$(document).ready(function() {
+    
+    // 1. Logic for Generate PDF (Existing)
+    $('.btn-check-pdf').on('click', function(e) {
+        // ... (Your existing code for PDF generation check) ...
+        e.preventDefault(); 
+        var $btn = $(this);
+        var $form = $btn.closest('form');
+        var formData = $form.serialize() + '&check_only=1';
+
+        $btn.prop('disabled', true);
+
+        $.post('generate_pdf.php', formData, function(response) {
+            $btn.prop('disabled', false);
+            if (response.status === 'success') {
+                $form[0].submit(); 
+                toastr.success("Downloading Report...");
+                
+                // OPTIONAL: Update the "Send Email" button in this row to allow sending immediately
+                // without refreshing, implies the user now "Has" the report.
+                var $row = $btn.closest('tr');
+                $row.find('.btn-send-email').attr('data-generated', '1');
+                
+            } else {
+                toastr.warning(response.message, "Validation Failed");
+            }
+        }, 'json').fail(function() {
+            $btn.prop('disabled', false);
+            toastr.error("Server connection error.");
+        });
+    });
+
+    // 2. NEW LOGIC: Send Email Button
+    $('.btn-send-email').on('click', function(e) {
+        e.preventDefault(); // Stop form from submitting
+        
+        var isGenerated = $(this).attr('data-generated');
+
+        if (isGenerated === '0' || isGenerated === '') {
+            // CONDITION NOT MET: Show Warning
+            toastr.warning("Please generate the PDF report first to verify its contents before sending.", "Action Required");
+        } else {
+            // CONDITION MET: Ask for confirmation then submit
+            if (confirm('Are you sure you want to email this report to the user?')) {
+                $(this).closest('form').submit();
+            }
+        }
+    });
+
+});
+</script>
+
 </body>
 </html>

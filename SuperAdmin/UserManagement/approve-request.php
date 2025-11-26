@@ -36,21 +36,15 @@ if (isset($_GET['approve_id'])) {
     if ($request) {
         $changes = json_decode($request['changes'], true);
 
-        // Combine name fields into fullName if present
-        if (isset($changes['first_name']) || isset($changes['middle_name']) || isset($changes['last_name'])) {
-            $firstName = $changes['first_name'] ?? "";
-            $middleName = $changes['middle_name'] ?? "";
-            $lastName = $changes['last_name'] ?? "";
-            $changes['fullName'] = trim("$firstName $middleName $lastName");
-            unset($changes['first_name'], $changes['middle_name'], $changes['last_name']);
-        }
+        // --- FIX 1: REMOVED the block that combined names into 'fullName' ---
+        // We want to update 'first_name', 'middle_name', 'last_name' columns directly.
 
         $updateFields = [];
         $updateValues = [];
         $types = "";
 
         foreach ($changes as $field => $value) {
-            if ($field === "password") continue; // Skip password in display
+            if ($field === "password") continue; // Skip password in display/update here if handled separately
             $updateFields[] = "$field = ?";
             $updateValues[] = $value;
             $types .= "s";
@@ -62,9 +56,11 @@ if (isset($_GET['approve_id'])) {
 
             $sql = "UPDATE users SET " . implode(", ", $updateFields) . " WHERE id = ?";
             $stmt = $conn->prepare($sql);
-            $stmt->bind_param($types, ...$updateValues);
-            $stmt->execute();
-            $stmt->close();
+            if ($stmt) {
+                $stmt->bind_param($types, ...$updateValues);
+                $stmt->execute();
+                $stmt->close();
+            }
         }
 
         // Mark request approved
@@ -72,6 +68,9 @@ if (isset($_GET['approve_id'])) {
         $stmt->bind_param("i", $requestId);
         $stmt->execute();
         $stmt->close();
+
+        // LOG ACTION
+        log_action($conn, $_SESSION['user_id'], 'Approve Request', "Approved profile changes for User ID: " . $request['user_id'], $request['user_id']);
     }
 
     header('Location: approve-request.php');
@@ -84,16 +83,25 @@ if (isset($_GET['reject_id'])) {
 
     $stmt = $conn->prepare("UPDATE change_requests SET status = 'rejected' WHERE id = ?");
     $stmt->bind_param("i", $requestId);
-    $stmt->execute();
+    if ($stmt->execute()) {
+        // LOG ACTION
+        // We need to fetch the user_id first to log accurately
+        $check = $conn->query("SELECT user_id FROM change_requests WHERE id = $requestId");
+        $targetId = ($check && $check->num_rows > 0) ? $check->fetch_assoc()['user_id'] : null;
+        
+        log_action($conn, $_SESSION['user_id'], 'Reject Request', "Rejected profile changes for Request ID: $requestId", $targetId);
+    }
     $stmt->close();
 
     header('Location: approve-request.php');
     exit();
 }
 
-// Fetch all pending requests
+// --- FIX 2: UPDATED SELECT QUERY ---
+// Replaced u.fullName with CONCAT logic
 $stmt = $conn->prepare("
-    SELECT cr.id, cr.user_id, cr.changes, cr.status, u.fullName 
+    SELECT cr.id, cr.user_id, cr.changes, cr.status, 
+           CONCAT(u.first_name, ' ', IF(u.middle_name IS NOT NULL AND u.middle_name != '', CONCAT(u.middle_name, ' '), ''), u.last_name) AS fullName
     FROM change_requests cr
     JOIN users u ON cr.user_id = u.id
     WHERE cr.status = 'pending'
@@ -153,47 +161,49 @@ $stmt->close();
             <div class="card card-table comman-shadow">
                 <div class="card-body">
                     <h5 class="card-title">Pending Change Requests</h5>
-                    <table class="table table-striped">
-                        <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>User</th>
-                            <th class="changes-column">Proposed Changes</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        <?php foreach ($requests as $row): ?>
-                            <?php $changes = json_decode($row['changes'], true); ?>
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
                             <tr>
-                                <td><?= $row['id'] ?></td>
-                                <td><?= htmlspecialchars($row['fullName']) ?></td>
-                                <td class="changes-column">
-                                    <?php
-                                    foreach ($changes as $field => $value) {
-                                        if ($field === "password") continue;
-                                        $label = $fieldLabels[$field] ?? $field;
-                                        if ($field === "profile_photo") {
-                                            echo "<b>$label:</b><br><img src='" . htmlspecialchars($value) . "' alt='Profile Photo'><br>";
-                                        } else {
-                                            echo "<b>$label:</b> " . htmlspecialchars($value) . "<br>";
-                                        }
-                                    }
-                                    ?>
-                                </td>
-                                <td><?= ucfirst($row['status']) ?></td>
-                                <td>
-                                    <a href="?approve_id=<?= $row['id'] ?>" class="btn btn-success btn-sm">Approve</a>
-                                    <a href="?reject_id=<?= $row['id'] ?>" class="btn btn-danger btn-sm">Reject</a>
-                                </td>
+                                <th>ID</th>
+                                <th>User</th>
+                                <th class="changes-column">Proposed Changes</th>
+                                <th>Status</th>
+                                <th>Actions</th>
                             </tr>
-                        <?php endforeach; ?>
-                        <?php if (empty($requests)): ?>
-                            <tr><td colspan="5" class="text-center">No pending requests</td></tr>
-                        <?php endif; ?>
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                            <?php foreach ($requests as $row): ?>
+                                <?php $changes = json_decode($row['changes'], true); ?>
+                                <tr>
+                                    <td><?= $row['id'] ?></td>
+                                    <td><?= htmlspecialchars($row['fullName']) ?></td>
+                                    <td class="changes-column">
+                                        <?php
+                                        foreach ($changes as $field => $value) {
+                                            if ($field === "password") continue;
+                                            $label = $fieldLabels[$field] ?? $field;
+                                            if ($field === "profile_photo") {
+                                                echo "<b>$label:</b><br><img src='" . htmlspecialchars($value) . "' alt='Profile Photo'><br>";
+                                            } else {
+                                                echo "<b>$label:</b> " . htmlspecialchars($value) . "<br>";
+                                            }
+                                        }
+                                        ?>
+                                    </td>
+                                    <td><?= ucfirst($row['status']) ?></td>
+                                    <td>
+                                        <a href="?approve_id=<?= $row['id'] ?>" class="btn btn-success btn-sm">Approve</a>
+                                        <a href="?reject_id=<?= $row['id'] ?>" class="btn btn-danger btn-sm">Reject</a>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <?php if (empty($requests)): ?>
+                                <tr><td colspan="5" class="text-center">No pending requests</td></tr>
+                            <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 

@@ -1,7 +1,7 @@
 <?php
 session_start(); // Always first!
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'Super Admin') {
-    header('Location: ../../index.php');
+if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+    header("Location: ../../index.php"); 
     exit();
 }
 
@@ -46,7 +46,7 @@ if (in_array($action, ['update_user','change_password','archive_user','restore_u
 $old = null;
 if (in_array($action, ['update_user','change_password','archive_user','restore_user'], true)) {
     $original = $conn->prepare(
-        "SELECT id, fullName, email, role, status, archived, created_at, department_id 
+        "SELECT id, CONCAT(first_name, ' ', IFNULL(middle_name,''), ' ', last_name) AS fullName, email, role, status FROM users 
          FROM users WHERE id=? LIMIT 1"
     );
     $original->bind_param("i", $id);
@@ -288,16 +288,17 @@ $stmt->bind_result($total_users);
 $stmt->fetch();
 $stmt->close();
 
-
-// -------- Fetch page results --------
+// -------- Base SQL --------
 $sql = "SELECT 
-            users.id, 
-            users.fullName, 
-            users.email, 
-            users.role, 
-            departments.department_name AS department, 
-            users.status, 
-            users.archived, 
+            users.id,
+            CONCAT(users.first_name, ' ',
+                   COALESCE(CONCAT(users.middle_name, ' '), ''),
+                   users.last_name) AS fullName,
+            users.email,
+            users.role,
+            departments.department_name AS department,
+            users.status,
+            users.archived,
             users.created_at
         FROM users
         LEFT JOIN departments ON users.department_id = departments.id
@@ -305,22 +306,39 @@ $sql = "SELECT
         ORDER BY users.created_at DESC, users.id DESC
         LIMIT ?, ?";
 
-
-$params2 = $params;            // copy base params
-$types2  = $types . 'ii';      // add 2 integers for LIMIT
-$params2[] = $offset;
-$params2[] = $limit;
-
+// -------- Prepare --------
 $stmt = $conn->prepare($sql);
-
 if (!$stmt) {
     die("Prepare failed (SELECT): (" . $conn->errno . ") " . $conn->error);
 }
 
-$stmt->bind_param($types2, ...$params2);
+// -------- Add LIMIT params --------
+// Make sure $params and $types exist for $whereSQL
+// Example:
+// $params = []; $types = '';
+$params2 = $params ?? []; // copy base params or empty array
+$types2  = $types ?? '';  // copy base types or empty string
+
+// Add types for LIMIT (always integers)
+$types2 .= 'ii';
+$params2[] = $offset;  // e.g., 0
+$params2[] = $limit;   // e.g., 10
+
+// -------- Bind params --------
+if ($params2) {
+    // dynamically bind params
+    $stmt->bind_param($types2, ...$params2);
+}
+
+// -------- Execute --------
 $stmt->execute();
+
+// -------- Get results --------
 $users = $stmt->get_result();
+
+// -------- Close statement --------
 $stmt->close();
+
 
 
 // -------- Pagination helpers --------
@@ -344,6 +362,9 @@ function e($str) { return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8'); }
     <link rel="stylesheet" href="../../assets/plugins/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="../../assets/css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
+    <script src="https://unpkg.com/feather-icons"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
 </head>
 
 <body>
@@ -642,14 +663,31 @@ function e($str) { return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8'); }
 
         <div class="modal-body">
           <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">Full Name</label>
-              <input type="text" class="form-control" name="fullName" id="editFullName" required>
+            <!-- First Name -->
+            <div class="col-md-4">
+              <label class="form-label">First Name</label>
+              <input type="text" class="form-control" name="first_name" id="editFirstName" required>
             </div>
+
+            <!-- Middle Name -->
+            <div class="col-md-4">
+              <label class="form-label">Middle Name</label>
+              <input type="text" class="form-control" name="middle_name" id="editMiddleName">
+            </div>
+
+            <!-- Last Name -->
+            <div class="col-md-4">
+              <label class="form-label">Last Name</label>
+              <input type="text" class="form-control" name="last_name" id="editLastName" required>
+            </div>
+
+            <!-- Email -->
             <div class="col-md-6">
               <label class="form-label">Email</label>
               <input type="email" class="form-control" name="email" id="editEmail" required>
             </div>
+
+            <!-- Role -->
             <div class="col-md-6">
               <label class="form-label">Role</label>
               <select class="form-select" name="role" id="editRole" required>
@@ -658,6 +696,8 @@ function e($str) { return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8'); }
                 <?php endforeach; ?>
               </select>
             </div>
+
+            <!-- Status -->
             <div class="col-md-6">
               <label class="form-label">Status</label>
               <select class="form-select" name="status" id="editStatus" required>
@@ -666,13 +706,14 @@ function e($str) { return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8'); }
                 <?php endforeach; ?>
               </select>
             </div>
+
+            <!-- Department -->
             <div class="col-md-6">
               <label class="form-label">Department</label>
               <select class="form-select" name="department_id" id="editDepartment">
                 <option value="">-- Select Department --</option>
 
                 <?php
-                // Fetch departments dynamically
                 $departments = $conn->query("SELECT id, department_name FROM departments ORDER BY department_name ASC");
                 while ($dept = $departments->fetch_assoc()):
                 ?>
@@ -682,7 +723,6 @@ function e($str) { return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8'); }
                   </option>
                 <?php endwhile; ?>
 
-                <!-- Special option for adding a new department -->
                 <option value="new">+ Add New Department</option>
               </select>
             </div>
@@ -703,6 +743,7 @@ function e($str) { return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8'); }
     </div>
   </div>
 </div>
+
 
 <!-- ===========================
      Change Password Modal
@@ -800,8 +841,6 @@ function e($str) { return htmlspecialchars((string)$str, ENT_QUOTES, 'UTF-8'); }
 <form id="deleteUserForm"></form>
 
 
-
-<script src="../../assets/js/jquery-3.6.0.min.js"></script>
 <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="../../assets/plugins/slimscroll/jquery.slimscroll.min.js"></script>
 <script src="../../assets/js/script.js"></script>

@@ -20,6 +20,10 @@
         <?php
         include '../../Layout Components/header.php';
         include '../../Layout Components/sidebar.php';
+        if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+            header("Location: ../../index.php"); 
+            exit();
+        }
         ?>
 
         <div class="page-wrapper">

@@ -6,7 +6,7 @@ require_once '../../helper/log_action.php';
 header('Content-Type: application/json');
 
 if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
-    echo json_encode(["status" => "error", "message" => "Unauthorized access."]);
+    header("Location: ../../index.php"); 
     exit();
 }
 

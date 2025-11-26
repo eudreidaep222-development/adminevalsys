@@ -24,12 +24,12 @@ try {
     $form_data = [
         "form_id" => $form_result['id'],
         "form_name" => $form_result['form_name'],
-        "version" => 2, // default
+        "versions" => 2, // default
         "categories" => []
     ];
 
     // 🔹 Check if this form has Version 1 criteria
-    $stmt = $conn->prepare("SELECT COUNT(*) as count FROM criteria WHERE form_id = ? AND version = 1");
+    $stmt = $conn->prepare("SELECT COUNT(*) as count FROM criteria WHERE form_id = ? AND versions = 1");
     $stmt->bind_param("i", $form_id);
     $stmt->execute();
     $version1Check = $stmt->get_result()->fetch_assoc();
@@ -37,7 +37,7 @@ try {
 
     if ($version1Check && $version1Check['count'] > 0) {
         // ✅ Load Version 1 structure
-        $form_data['version'] = 1;
+        $form_data['versions'] = 1;
         $categories = [];
 
         $stmt = $conn->prepare("
@@ -105,7 +105,8 @@ try {
     }
 
     // Ensure version is properly detected
-    $form_data['version'] = count($form_data['categories']) > 0 ? 2 : 1;
+    $versions = $data['versions'] ?? 2;
+    $form_data['versions'] = count($form_data['categories']) > 0 ? 2 : 1;
 
     echo json_encode($form_data);
     exit;

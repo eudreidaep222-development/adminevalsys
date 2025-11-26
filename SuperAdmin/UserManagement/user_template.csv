@@ -1,3 +1,1 @@
-﻿fullName,email,password,role,status,can_be_evaluated
-John Doe,johndoe@gmail.com,example123,Administrator,Active,1
-Jane Smith,janesmith@gmail.com,example1234,Faculty,Active,0
+first_name,middle_name,last_name,email,Password,role,status,can_be_evaluated,temp_password_required,account_locked,archived,profile_photo,department_id,position_id,domain_id,contact_number,otp_code,otp_expiration,otp_verified

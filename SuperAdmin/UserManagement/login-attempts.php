@@ -22,8 +22,13 @@ $whereClause = '';
 $params = [];
 $paramTypes = '';
 
+// --- FIXED: Name Construction Logic ---
+// We define this string to reuse it in both SELECT and WHERE clauses
+$nameSql = "CONCAT(users.first_name, ' ', IF(users.middle_name IS NOT NULL AND users.middle_name != '', CONCAT(users.middle_name, ' '), ''), users.last_name)";
+
 if (!empty($search)) {
-    $whereClause = "WHERE users.fullName LIKE ? OR login_attempts.ip_address LIKE ? OR login_attempts.status LIKE ?";
+    // FIXED: Replaced users.fullName with the CONCAT logic
+    $whereClause = "WHERE ($nameSql LIKE ? OR login_attempts.ip_address LIKE ? OR login_attempts.status LIKE ?)";
     $searchTerm = "%$search%";
     $params = [$searchTerm, $searchTerm, $searchTerm];
     $paramTypes = 'sss';
@@ -43,7 +48,9 @@ $countStmt->close();
 $totalPages = ceil($totalLogs / $limit);
 
 // Fetch attempts
-$sql = "SELECT login_attempts.*, users.fullName 
+// FIXED: Select constructed name as 'fullName' so the HTML below doesn't break
+$sql = "SELECT login_attempts.*, 
+        $nameSql AS fullName 
         FROM login_attempts 
         JOIN users ON login_attempts.user_id = users.id 
         $whereClause
@@ -113,7 +120,6 @@ include '../../Layout Components/sidebar.php';
                     </table>
                 </div>
 
-                <!-- Pagination -->
                 <?php if ($totalPages > 1): ?>
                     <nav>
                         <ul class="pagination justify-content-center mt-3">

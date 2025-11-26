@@ -1,8 +1,9 @@
 <?php
+session_start();
 require_once '../../1database_conn/connection.php';
-if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'administrator') {
+if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
     header('Content-Type: application/json');
-    echo json_encode(['error' => 'Unauthorized access']);
+    echo json_encode(["status" => "error", "message" => "Unauthorized access."]);
     exit();
 }
 

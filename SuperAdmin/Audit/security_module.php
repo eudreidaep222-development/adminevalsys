@@ -1,3 +1,52 @@
+<?php
+session_start();
+// Check permissions
+if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+    header("Location: ../../index.php"); 
+    exit();
+}
+
+require_once '../../1database_conn/connection.php';
+
+// --- HELPER: Parse User Agent for Device Name ---
+function getDeviceIconAndName($userAgent) {
+    $userAgent = strtolower($userAgent);
+    $icon = 'fa-desktop';
+    $name = 'Desktop';
+
+    if (strpos($userAgent, 'windows') !== false) {
+        $name = 'Windows PC';
+        $icon = 'fa-microsoft';
+    } elseif (strpos($userAgent, 'macintosh') !== false) {
+        $name = 'Mac';
+        $icon = 'fa-apple';
+    } elseif (strpos($userAgent, 'iphone') !== false) {
+        $name = 'iPhone';
+        $icon = 'fa-mobile-alt';
+    } elseif (strpos($userAgent, 'android') !== false) {
+        $name = 'Android';
+        $icon = 'fa-android';
+    } elseif (strpos($userAgent, 'linux') !== false) {
+        $name = 'Linux';
+        $icon = 'fa-linux';
+    }
+
+    return ['name' => $name, 'icon' => $icon];
+}
+
+// --- FETCH LOGIN ATTEMPTS ---
+// We JOIN with the users table to get the Name and Role based on user_id
+// If user_id is NULL (e.g. invalid email used), we just show the email attempted.
+$sql = "
+    SELECT la.*, u.fullName, u.role 
+    FROM login_attempts la 
+    LEFT JOIN users u ON la.user_id = u.id 
+    ORDER BY la.attempt_time DESC 
+    LIMIT 50";
+
+$result = $conn->query($sql);
+?>
+
 <!DOCTYPE html>
 <html lang="en">
 
@@ -17,8 +66,6 @@
 
 <body>
 
-<!-- security_module.php -->
-
     <div class="main-wrapper">
         <?php
         include '../../Layout Components/header.php';
@@ -28,7 +75,6 @@
         <div class="page-wrapper">
             <div class="content container-fluid">
 
-                <!-- Page Header -->
                 <div class="page-header">
                     <div class="row align-items-center">
                         <div class="col">
@@ -41,47 +87,84 @@
                     </div>
                 </div>
 
-                <!-- Security Module Content -->
+                <div class="alert alert-primary alert-dismissible fade show" role="alert">
+                    <i class="fas fa-network-wired me-2"></i>
+                    <strong>System Diagnostic:</strong> Your current IP Address is detected as: 
+                    <span class="badge bg-white text-primary ms-2" style="font-size: 1em;">
+                        <?php echo $_SERVER['REMOTE_ADDR']; ?>
+                    </span>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+
                 <div class="card">
                     <div class="card-header">
-                        <h5 class="card-title">Authentication and Security Module</h5>
+                        <h5 class="card-title">Authentication Logs</h5>
                     </div>
                     <div class="card-body">
                         <p class="text-muted">
                             This module protects user data and system integrity through authentication enforcement, access logging, and session timeout policies.
                         </p>
 
-                        <!-- Access Log Table -->
-                        <h6>Recent Login Activity</h6>
-                        <table class="table table-striped">
-                            <thead>
-                                <tr>
-                                    <th>User</th>
-                                    <th>Role</th>
-                                    <th>IP Address</th>
-                                    <th>Timestamp</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td>admin1</td>
-                                    <td>Super Admin</td>
-                                    <td>192.168.1.10</td>
-                                    <td>2025-06-20 08:00</td>
-                                    <td><span class="badge bg-success">Success</span></td>
-                                </tr>
-                                <tr>
-                                    <td>evaluator2</td>
-                                    <td>Evaluator</td>
-                                    <td>192.168.1.23</td>
-                                    <td>2025-06-20 08:15</td>
-                                    <td><span class="badge bg-danger">Failed</span></td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <h6 class="mb-3">Recent Login Activity</h6>
+                        <div class="table-responsive">
+                            <table class="table table-hover table-center mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>User / Email</th>
+                                        <th>Role</th>
+                                        <th>IP Address</th>
+                                        <th>Device Used</th>
+                                        <th>Timestamp</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php if ($result && $result->num_rows > 0): ?>
+                                        <?php while ($row = $result->fetch_assoc()): 
+                                            // Determine device info
+                                            $deviceInfo = getDeviceIconAndName($row['user_agent']);
+                                            
+                                            // Determine Display Name
+                                            $displayName = $row['fullName'] ?? $row['email'];
+                                            $displayRole = $row['role'] ?? '<span class="text-muted">Unknown</span>';
+                                        ?>
+                                        <tr>
+                                            <td>
+                                                <h2 class="table-avatar">
+                                                    <a href="javascript:void(0);" class="avatar avatar-sm me-2"><img class="avatar-img rounded-circle" src="../../assets/img/profiles/avatar-01.jpg" alt="User Image"></a>
+                                                    <a href="javascript:void(0);"><?php echo htmlspecialchars($displayName); ?></a>
+                                                </h2>
+                                            </td>
+                                            <td><?php echo htmlspecialchars($displayRole); ?></td>
+                                            <td>
+                                                <span class="text-monospace"><?php echo htmlspecialchars($row['ip_address']); ?></span>
+                                            </td>
+                                            <td>
+                                                <i class="fab <?php echo $deviceInfo['icon']; ?> me-1 text-muted"></i>
+                                                <?php echo htmlspecialchars($deviceInfo['name']); ?>
+                                            </td>
+                                            <td><?php echo date('M d, Y h:i A', strtotime($row['attempt_time'])); ?></td>
+                                            <td>
+                                                <?php if ($row['status'] === 'success'): ?>
+                                                    <span class="badge bg-success">Success</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-danger">Failed</span>
+                                                    <?php if(!empty($row['reason'])): ?>
+                                                        <i class="fas fa-info-circle text-danger ms-1" data-bs-toggle="tooltip" title="<?php echo htmlspecialchars($row['reason']); ?>"></i>
+                                                    <?php endif; ?>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                        <?php endwhile; ?>
+                                    <?php else: ?>
+                                        <tr>
+                                            <td colspan="6" class="text-center">No login attempts recorded yet.</td>
+                                        </tr>
+                                    <?php endif; ?>
+                                </tbody>
+                            </table>
+                        </div>
 
-                        <!-- Info Alert -->
                         <div class="alert alert-info mt-4">
                             <i class="fas fa-info-circle me-2"></i> Session timeout is set to <strong>15 minutes</strong> of inactivity.
                         </div>
@@ -97,13 +180,14 @@
     <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
     <script src="../../assets/js/feather.min.js"></script>
     <script src="../../assets/plugins/slimscroll/jquery.slimscroll.min.js"></script>
-    <script src="../../assets/plugins/apexchart/apexcharts.min.js"></script>
-    <script src="../../assets/plugins/apexchart/chart-data.js"></script>
-    <script src="../../assets/plugins/simple-calendar/jquery.simple-calendar.js"></script>
-    <script src="../../assets/js/calander.js"></script>
-    <script src="../../assets/js/circle-progress.min.js"></script>
     <script src="../../assets/js/script.js"></script>
+    
+    <script>
+        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+          return new bootstrap.Tooltip(tooltipTriggerEl)
+        })
+    </script>
 
 </body>
-
 </html>

@@ -1,6 +1,5 @@
 <?php
 include '../../1database_conn/connection.php';
-
 $academics = $conn->query("SELECT id, semester, school_year, is_default FROM academic_list ORDER BY id DESC");
 ?>
 <!DOCTYPE html>
@@ -19,8 +18,14 @@ $academics = $conn->query("SELECT id, semester, school_year, is_default FROM aca
 </head>
 <body>
 <div class="main-wrapper">
-<?php include '../../Layout Components/header.php'; ?>
-<?php include '../../Layout Components/sidebar.php'; ?>
+<?php
+  include '../../Layout Components/header.php';
+  include '../../Layout Components/sidebar.php';
+  if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+    header("Location: ../../index.php"); 
+  exit();
+  }
+?>
 
 <div class="page-wrapper">
   <div class="content container-fluid">

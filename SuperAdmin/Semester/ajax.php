@@ -3,6 +3,7 @@ include '../../1database_conn/connection.php';
 
 $action = $_POST['action'] ?? $_GET['action'] ?? null;
 
+// Save or update semester
 if ($action === 'save_academic') {
     extract($_POST);
 
@@ -46,25 +47,37 @@ if ($action === 'save_academic') {
     exit;
 }
 
-if ($action === 'delete_academic') {
-    $id = $_POST['id'];
-    if (is_numeric($id)) {
-        $del = $conn->query("DELETE FROM academic_list WHERE id = $id");
-        if ($del) echo 1;
-    }
-    exit;
-}
-
+// Make a semester the system default
 if ($action === 'make_default') {
     $id = $_POST['id'];
+
     if (is_numeric($id)) {
-        $conn->query("UPDATE academic_list SET is_default = 0");
-        $set = $conn->query("UPDATE academic_list SET is_default = 1 WHERE id = $id");
-        if ($set) echo 1;
+        $conn->begin_transaction();
+
+        try {
+            // 1. Set ALL semesters inactive and remove default
+            $conn->query("UPDATE academic_list 
+                          SET is_default = 0, is_active = 0");
+
+            // 2. Set new default semester -> active + default
+            $stmt = $conn->prepare("UPDATE academic_list 
+                                    SET is_default = 1, is_active = 1 
+                                    WHERE id = ?");
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $stmt->close();
+
+            $conn->commit();
+            echo 1;
+        } catch (Exception $e) {
+            $conn->rollback();
+            echo 0;
+        }
     }
     exit;
 }
 
+// Get semester data for editing
 if ($action === 'get_academic') {
     $id = $_GET['id'];
     if (is_numeric($id)) {

@@ -4,15 +4,21 @@ include '../../1database_conn/connection.php';
 
 // Make sure user is logged in
 if (!isset($_SESSION['user_id'])) {
-    header("Location: ../../login.php");
+    header("Location: ../../index.php");
     exit;
 }
+    if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'faculty') {
+          header("Location: ../../index.php"); 
+          exit();
+        }
 
 $evaluator_id = intval($_SESSION['user_id']);
 
 $sql = "
     SELECT ea.id AS assignment_id, 
-           u.fullName,
+           -- START NAME CONCATENATION HERE
+           CONCAT(u.first_name, ' ', IF(u.middle_name IS NOT NULL AND u.middle_name != '', CONCAT(SUBSTRING(u.middle_name, 1, 1), '. '), ''), u.last_name) AS fullName,
+           -- END NAME CONCATENATION
            d.department_name,
            CASE 
                WHEN COUNT(er.id) > 0 THEN 'completed' 
@@ -27,7 +33,8 @@ $sql = "
           AND er.form_id = ea.form_id
           AND er.academic_id = ea.academic_id
     WHERE ea.evaluator_id = $evaluator_id
-    GROUP BY ea.id, u.fullName, d.department_name
+    -- Update GROUP BY to use new component fields for naming, or keep the alias if supported by your MariaDB version (using alias is simpler).
+    GROUP BY ea.id, fullName, d.department_name
 ";
 
 $result = $conn->query($sql);
@@ -178,30 +185,33 @@ if ($result && $result->num_rows > 0) {
 
 <script>
 function selectEmployee(fullName, dept, assignmentId, status) {
+    // 1. DIRECT REDIRECT: If pending, go straight to evaluation
+    if (status.toLowerCase() === 'pending') {
+        window.location.href = `evaluation.php?assignment_id=${assignmentId}&fullName=${encodeURIComponent(fullName)}`;
+        return; // Stop execution so side panel doesn't open
+    }
+
+    // 2. EXISTING LOGIC: Keep side panel ONLY for 'Completed' items (view only)
     document.getElementById("selectedEmployeeBox").style.display = "block";
     document.getElementById("selectedName").innerText = fullName;
     document.getElementById("selectedDept").innerText = dept || "N/A";
 
-    // Capitalize status
     let statusText = status.charAt(0).toUpperCase() + status.slice(1);
     document.getElementById("selectedStatus").innerText = statusText;
 
-    // Set button link
     const evaluateBtn = document.getElementById("evaluateBtn");
+    
+    // Keep link structure just in case
     evaluateBtn.href = `evaluation.php?assignment_id=${assignmentId}&fullName=${encodeURIComponent(fullName)}`;
 
-    // Disable button if evaluation is completed
+    // For completed items, keep the button disabled/visual only
     if (status.toLowerCase() === 'completed') {
-        evaluateBtn.classList.add('disabled');  // Bootstrap disabled style
+        evaluateBtn.classList.add('disabled');
         evaluateBtn.setAttribute('aria-disabled', 'true');
         evaluateBtn.style.pointerEvents = 'none';
-    } else {
-        evaluateBtn.classList.remove('disabled');
-        evaluateBtn.removeAttribute('aria-disabled');
-        evaluateBtn.style.pointerEvents = 'auto';
+        evaluateBtn.innerHTML = '<i class="fa fa-check me-1"></i> Evaluation Completed';
     }
 }
-
 </script>
 
 </body>

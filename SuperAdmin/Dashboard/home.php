@@ -14,8 +14,8 @@
     <link rel="stylesheet" href="../../assets/css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css"> 
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
- 
-
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/feather-icons/dist/feather.min.js"></script>
 </head>
 
 <body>
@@ -25,6 +25,10 @@
         <?php
         include '../../Layout Components/header.php';
         include '../../Layout Components/sidebar.php';
+        if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+          header("Location: ../../index.php"); 
+          exit();
+        }
         ?>
 
         <div class="page-wrapper">
@@ -201,7 +205,6 @@
         </div>
     </div>
 
-<script src="../../assets/js/jquery-3.6.0.min.js"></script>
 <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="../../assets/plugins/slimscroll/jquery.slimscroll.min.js"></script>
 <script src="../../assets/plugins/apexchart/apexcharts.min.js"></script>
@@ -209,8 +212,6 @@
 <script src="../../assets/js/calander.js"></script>
 <script src="../../assets/js/script.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
-<script src="../../assets/js/alert-toast.js"></script>
-
 <?php
 $semesters = [];
 $result = $conn->query("SELECT * FROM academic_list ORDER BY id ASC");

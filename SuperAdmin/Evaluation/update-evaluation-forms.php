@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="../../assets/plugins/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="../../assets/css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css" />
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
 </head>
 
@@ -23,6 +24,10 @@
         <?php
         include '../../Layout Components/header.php';
         include '../../Layout Components/sidebar.php';
+        if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+            header("Location: ../../index.php"); 
+            exit();
+        }
         ?>
 
         <div class="page-wrapper">
@@ -88,6 +93,28 @@
                                     <div class="form-group" id="formNameGroup" style="display: none;">
                                         <label for="formName">Form Name</label>
                                         <input type="text" class="form-control" id="formName" required>
+                                    </div>
+                                    <div class="form-group" id="formVersionGroup" style="display: none;">
+                                        <label for="formVersionSelect">Form Type</label>
+                                        <select id="formVersionSelect" class="form-control" required>
+                                            <option value="" disabled selected>-- Select Form Version --</option>
+                                            <?php
+                                            $result = $conn->query("
+                                                SELECT ef.versions AS version_id, fv.version_label 
+                                                FROM evaluation_forms ef 
+                                                JOIN form_versions fv ON ef.versions = fv.version_id 
+                                                GROUP BY ef.versions 
+                                                ORDER BY ef.versions ASC
+                                            ");
+                                            if($result && $result->num_rows > 0){
+                                                while($row = $result->fetch_assoc()){
+                                                    echo "<option value='{$row['version_id']}'>Version {$row['version_id']} - {$row['version_label']}</option>";
+                                                }
+                                            } else {
+                                                echo "<option value='' disabled>No Form Versions Found</option>";
+                                            }
+                                            ?>
+                                        </select>
                                     </div>
 
                                     <!-- Categories / Criteria will load here -->
@@ -208,14 +235,11 @@
         </div>
     </div>
 
-    <script src="../../assets/js/jquery-3.6.0.min.js"></script>
     <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
     <script src="../../assets/js/feather.min.js"></script>
     <script src="../../assets/plugins/slimscroll/jquery.slimscroll.min.js"></script>
     <script src="../../assets/plugins/apexchart/apexcharts.min.js"></script>
     <script src="../../assets/plugins/apexchart/chart-data.js"></script>
-    <script src="../../assets/plugins/simple-calendar/jquery.simple-calendar.js"></script>
-    <script src="../../assets/js/calander.js"></script>
     <script src="../../assets/js/circle-progress.min.js"></script>
     <script src="../../assets/js/script.js"></script>
     <script src="https://unpkg.com/boxicons@2.1.4/dist/boxicons.js"></script>
@@ -229,13 +253,23 @@ document.addEventListener("DOMContentLoaded", function () {
     const selectForm = document.getElementById("selectForm");
     const formNameEl = document.getElementById("formName");
     const categoriesContainer = document.getElementById("categoriesContainer");
+    const formControls = document.getElementById("formControls");
+    const formNameGroup = document.getElementById("formNameGroup");
+    const formVersionGroup = document.getElementById("formVersionGroup");
+    const formVersionSelect = document.getElementById("formVersionSelect");
 
-    window.currentFormVersion = null;
+    window.currentFormVersion = '2'; // Default
 
+    // 1. Load Forms List
     academicSelect.addEventListener("change", function () {
         const academicId = this.value;
         selectForm.innerHTML = '<option value="">-- Select a Form --</option>';
         selectForm.disabled = true;
+        formControls.style.display = 'none';
+        formNameGroup.style.display = 'none';
+        formVersionGroup.style.display = 'none'; // Hide version
+        categoriesContainer.innerHTML = '';
+        
         if (!academicId) return;
 
         fetch("get_forms.php?academic_id=" + academicId)
@@ -249,181 +283,303 @@ document.addEventListener("DOMContentLoaded", function () {
                         selectForm.appendChild(opt);
                     });
                     selectForm.disabled = false;
+                } else {
+                    toastr.info("No forms found for this period.");
                 }
             })
             .catch(err => console.error(err));
     });
 
+    // 2. Load Form Details
     selectForm.addEventListener("change", function () {
         const formId = this.value;
-        if (!formId) { categoriesContainer.innerHTML = ''; window.currentFormVersion = null; return; }
+        if (!formId) { 
+            categoriesContainer.innerHTML = ''; 
+            formControls.style.display = 'none';
+            formNameGroup.style.display = 'none';
+            formVersionGroup.style.display = 'none';
+            return; 
+        }
 
         fetch("get_form_details.php?id=" + formId)
             .then(r => r.json())
             .then(data => {
-                window.currentFormVersion = parseInt(data.version) || 1;
+                isInitialLoad = true;
+                // Set Version
+                window.currentFormVersion = (data.versions || data.version) ? String(data.versions || data.version) : '2';   
+                const versionSelect = document.getElementById("formVersionSelect");             
+                if(versionSelect) formVersionSelect.value = window.currentFormVersion;
+ 
                 formNameEl.value = data.form_name || '';
+                
+                // Show UI Elements
+                formControls.style.display = 'block';
+                formNameGroup.style.display = 'block';
+                formVersionGroup.style.display = 'block'; // Show dropdown
+                
                 categoriesContainer.innerHTML = '';
 
-                if (window.currentFormVersion === 1) {
-                    renderV1Form(data);
+                if (data.categories && data.categories.length > 0) {
+                    data.categories.forEach(cat => {
+                        addCategory(
+                            cat.category_name || '', 
+                            parseFloat(cat.category_percentage || 0), 
+                            cat.criteria || [], 
+                            window.currentFormVersion
+                        );
+                    });
                 } else {
-                    data.categories.forEach(cat => addCategory(cat.category_name || '', parseInt(cat.category_percentage || 0), cat.criteria || [], String(window.currentFormVersion)));
+                    addCategory('', 0, [], window.currentFormVersion);
                 }
+                
                 updateLivePreview();
             });
     });
 
-    function renderV1Form(data) {
-        const v1Div = document.createElement('div');
-        v1Div.classList.add('card', 'mt-3');
-        v1Div.innerHTML = `
-            <div class="card-body">
-                <h4>Criteria</h4>
-                <table class="table" id="v1CriteriaTable">
-                    <thead>
-                        <tr>
-                            <th>Criterion</th>
-                            <th>1</th><th>2</th><th>3</th><th>4</th><th>5</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-                <button type="button" class="btn btn-outline-secondary mt-2" id="addV1Btn">Add Criterion</button>
-            </div>`;
-        categoriesContainer.appendChild(v1Div);
+    // 3. Handle Version Change
+    formVersionSelect.addEventListener("change", function() {
+        if(confirm("Changing the form version will clear current categories. Proceed?")) {
+            window.currentFormVersion = this.value;
+            categoriesContainer.innerHTML = '';
+            addCategory('', 0, [], window.currentFormVersion);
+            updateLivePreview();
+        } else {
+            this.value = window.currentFormVersion; // Revert
+        }
+    });
 
-        const tbody = v1Div.querySelector('tbody');
-        (data.categories[0]?.criteria || []).forEach(c => addV1Row(tbody, c.criterion || c.output_name || ''));
-        v1Div.querySelector('#addV1Btn').addEventListener('click', () => addV1Row(tbody, ''));
-    }
-
-    function addV1Row(tbody, text) {
-        const row = document.createElement('tr');
-        const name = 'v1_' + Math.random().toString(36).slice(2,10);
-        row.innerHTML = `
-            <td><textarea class="form-control" required>${text}</textarea></td>
-            <td><input type="radio" name="${name}" value="1"></td>
-            <td><input type="radio" name="${name}" value="2"></td>
-            <td><input type="radio" name="${name}" value="3"></td>
-            <td><input type="radio" name="${name}" value="4"></td>
-            <td><input type="radio" name="${name}" value="5"></td>
-            <td><button type="button" class="btn btn-outline-danger remove-btn">Remove</button></td>`;
-        tbody.appendChild(row);
-
-        row.querySelector('.remove-btn').addEventListener('click', () => { row.remove(); updateLivePreview(); });
-        row.querySelectorAll('textarea, input').forEach(el => el.addEventListener('input', updateLivePreview));
-    }
-
+    // 4. Add Category Logic
     function addCategory(name = '', pct = 0, criteria = [], version = '2') {
-        const isV1 = version === '1';
+        const isV1 = String(version) === '1';
         const div = document.createElement('div');
         div.classList.add('category');
         div.dataset.version = isV1 ? 'v1' : 'v2';
 
-        const tableHeader = isV1 ? `<tr><th>Criterion</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>Action</th></tr>`
-            : `<tr><th>Output</th><th>Success Indicator</th><th>Actual Accomplishment</th><th>Comment</th><th>Q</th><th>E</th><th>T</th><th>A</th><th>Action</th></tr>`;
+        let tableHeader = '';
+        if (isV1) {
+            tableHeader = `<tr>
+                <th style="width: 50%;">Criterion</th>
+                <th class="text-center" style="width: 8%;">1</th>
+                <th class="text-center" style="width: 8%;">2</th>
+                <th class="text-center" style="width: 8%;">3</th>
+                <th class="text-center" style="width: 8%;">4</th>
+                <th class="text-center" style="width: 8%;">5</th>
+                <th style="width: 10%;">Action</th>
+            </tr>`;
+        } else {
+            tableHeader = `<tr><th>Output</th><th>Success Indicator</th><th>Accomplishment</th><th>Q</th><th>E</th><th>T</th><th>A</th><th>Action</th></tr>`;
+        }
+
+        const pctDisplay = isV1 ? 'style="display:none;"' : '';
 
         div.innerHTML = `
             <div class="card mt-3">
                 <div class="card-body">
-                    <label>Category Name</label>
-                    <input type="text" class="form-control category-name" value="${name}" required>
-                    <label>Category Percentage</label>
-                    <input type="number" class="form-control category-percentage" value="${pct}" min="0" max="100">
-                    <button type="button" class="btn btn-outline-danger remove-category mt-2">Remove Category</button>
-                    <table class="table mt-3">
-                        <thead>${tableHeader}</thead>
-                        <tbody class="criteriaTable"></tbody>
-                    </table>
-                    <button type="button" class="btn btn-outline-secondary add-criteria mt-2">Add Criteria</button>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="card-title text-primary">Category</h5>
+                        <button type="button" class="btn btn-sm btn-outline-danger remove-category">
+                            <i class="fa fa-trash"></i> Remove
+                        </button>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-8">
+                            <label>Category Name</label>
+                            <input type="text" class="form-control category-name" value="${name}" required>
+                        </div>
+                        <div class="col-md-4" ${pctDisplay}>
+                            <label>Percentage (%)</label>
+                            <input type="number" class="form-control category-percentage" value="${pct}" min="0" max="100">
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-bordered mt-3">
+                            <thead class="bg-light">${tableHeader}</thead>
+                            <tbody class="criteriaTable"></tbody>
+                        </table>
+                    </div>
+                    
+                    <button type="button" class="btn btn-sm btn-outline-secondary add-criteria mt-2">
+                        <i class="fa fa-plus"></i> Add Criterion
+                    </button>
                 </div>
             </div>`;
 
         const criteriaTable = div.querySelector('.criteriaTable');
-        (criteria || []).forEach(c => addCategoryRow(criteriaTable, c, isV1));
+        
+        if (criteria.length > 0) {
+            criteria.forEach(c => addCategoryRow(criteriaTable, c, isV1));
+        } else {
+            addCategoryRow(criteriaTable, {}, isV1);
+        }
 
         div.querySelector('.add-criteria').addEventListener('click', () => addCategoryRow(criteriaTable, {}, isV1));
-        div.querySelector('.remove-category').addEventListener('click', () => { div.remove(); updateLivePreview(); });
+        div.querySelector('.remove-category').addEventListener('click', () => { 
+            if(confirm('Delete this category?')) { div.remove(); updateLivePreview(); }
+        });
+        div.querySelector('.category-name').addEventListener('input', updateLivePreview);
 
         categoriesContainer.appendChild(div);
     }
 
+    // 5. Add Row Logic
     function addCategoryRow(table, crit = {}, isV1 = false) {
         const row = document.createElement('tr');
+        const text = crit.criterion || crit.output_name || ''; 
+
         if (isV1) {
-            const name = 'v1_' + Math.random().toString(36).slice(2,10);
             row.innerHTML = `
-                <td><textarea class="form-control" required>${crit.criterion || crit.output_name || ''}</textarea></td>
-                <td><input type="radio" name="${name}" value="1"></td>
-                <td><input type="radio" name="${name}" value="2"></td>
-                <td><input type="radio" name="${name}" value="3"></td>
-                <td><input type="radio" name="${name}" value="4"></td>
-                <td><input type="radio" name="${name}" value="5"></td>
-                <td><button type="button" class="btn btn-outline-danger remove-btn">Remove</button></td>`;
+                <td><textarea class="form-control criterion-input" rows="1" placeholder="Enter criterion...">${text}</textarea></td>
+                <td class="text-center"><input type="radio" disabled></td>
+                <td class="text-center"><input type="radio" disabled></td>
+                <td class="text-center"><input type="radio" disabled></td>
+                <td class="text-center"><input type="radio" disabled></td>
+                <td class="text-center"><input type="radio" disabled></td>
+                <td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger remove-btn"><i class="fa fa-times"></i></button></td>`;
         } else {
             row.innerHTML = `
-                <td><textarea class="form-control">${crit.output_name || ''}</textarea></td>
-                <td><textarea class="form-control">${crit.success_indicator || ''}</textarea></td>
-                <td><textarea class="form-control">${crit.accomplishment || ''}</textarea></td>
-                <td><textarea class="form-control">${crit.comment || ''}</textarea></td>
-                <td><input type="number" class="form-control" value="${crit.q_rating || 0}"></td>
-                <td><input type="number" class="form-control" value="${crit.e_rating || 0}"></td>
-                <td><input type="number" class="form-control" value="${crit.t_rating || 0}"></td>
-                <td><input type="number" class="form-control" value="${crit.a_rating || 0}"></td>
-                <td><button type="button" class="btn btn-outline-danger remove-btn">Remove</button></td>`;
+                <td><textarea class="form-control" rows="1">${crit.output_name || ''}</textarea></td>
+                <td><textarea class="form-control" rows="1">${crit.success_indicator || ''}</textarea></td>
+                <td><textarea class="form-control" rows="1">${crit.accomplishment || ''}</textarea></td>
+                <td><input type="number" class="form-control" style="width:50px" value="${crit.q_rating || 0}"></td>
+                <td><input type="number" class="form-control" style="width:50px" value="${crit.e_rating || 0}"></td>
+                <td><input type="number" class="form-control" style="width:50px" value="${crit.t_rating || 0}"></td>
+                <td><input type="number" class="form-control" style="width:50px" value="${crit.a_rating || 0}" readonly></td>
+                <td><button type="button" class="btn btn-sm btn-outline-danger remove-btn"><i class="fa fa-times"></i></button></td>`;
         }
+        
         table.appendChild(row);
 
-        row.querySelector('.remove-btn').addEventListener('click', () => { row.remove(); updateLivePreview(); });
+        row.querySelector('.remove-btn').addEventListener('click', () => { 
+            row.remove(); 
+            updateLivePreview(); 
+        });
+
         row.querySelectorAll('textarea, input').forEach(el => el.addEventListener('input', updateLivePreview));
     }
 
+    // 6. Update Live Preview
     function updateLivePreview() {
         const preview = document.getElementById('previewContent');
-        preview.innerHTML = `<h3>${formNameEl.value}</h3>`;
+        const fName = formNameEl.value || 'Form Name';
+        const academicSelect = document.getElementById('academicSelect');
+        const academicText = academicSelect.options[academicSelect.selectedIndex]?.text || '';
 
-        categoriesContainer.querySelectorAll('.category').forEach(cat => {
+        preview.innerHTML = `<h3>${fName}</h3><p class="text-muted">${academicText}</p><hr>`;
+
+        document.querySelectorAll('.category').forEach(cat => {
             const version = cat.dataset.version;
-            const catName = cat.querySelector('.category-name').value;
+            const catName = cat.querySelector('.category-name').value || 'Untitled Category';
             const catPct = cat.querySelector('.category-percentage').value;
-            let html = `<h4>${catName} (${catPct}%)</h4><table class="table"><thead>`;
+            
+            const headerStr = version === 'v1' ? catName : `${catName} (${catPct}%)`;
+            
+            const previewDiv = document.createElement('div');
+            previewDiv.innerHTML = `<h5 class="mt-4 text-primary">${headerStr}</h5>`;
+            
+            const table = document.createElement('table');
+            table.classList.add('table', 'table-bordered', 'table-sm');
+            
+            let thead = '', tbody = '<tbody>';
+            
             if (version === 'v1') {
-                html += `<tr><th>Criterion</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th></tr>`;
-                html += '<tbody>';
-                cat.querySelectorAll('.criteriaTable tr').forEach((row, i) => {
-                    const val = row.querySelector('textarea').value;
-                    html += `<tr><td>${val}</td><td></td><td></td><td></td><td></td><td></td></tr>`;
-                });
-                html += '</tbody>';
-            } else {
-                html += `<tr><th>Output</th><th>Success Indicator</th><th>Actual Accomplishment</th><th>Comment</th><th>Q</th><th>E</th><th>T</th><th>A</th></tr>`;
-                html += '<tbody>';
+                thead = `<thead><tr class="text-center bg-light"><th style="width:50%">Criterion</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th></tr></thead>`;
                 cat.querySelectorAll('.criteriaTable tr').forEach(row => {
-                    const cells = row.querySelectorAll('input, textarea');
-                    html += `<tr>`;
-                    cells.forEach(c => html += `<td>${c.value}</td>`);
-                    html += `</tr>`;
+                    const val = row.querySelector('.criterion-input').value;
+                    tbody += `<tr><td>${val}</td><td class="text-center"><input type="radio" disabled></td><td class="text-center"><input type="radio" disabled></td><td class="text-center"><input type="radio" disabled></td><td class="text-center"><input type="radio" disabled></td><td class="text-center"><input type="radio" disabled></td></tr>`;
                 });
-                html += '</tbody>';
+            } else {
+                thead = `<thead><tr class="bg-light"><th>Output</th><th>Success</th><th>Accomplishment</th><th>Q</th><th>E</th><th>T</th><th>A</th></tr></thead>`;
+                cat.querySelectorAll('.criteriaTable tr').forEach(row => {
+                    const fields = row.querySelectorAll('textarea, input');
+                    if(fields.length >= 7) {
+                        tbody += `<tr><td>${fields[0].value}</td><td>${fields[1].value}</td><td>${fields[2].value}</td><td>${fields[3].value}</td><td>${fields[4].value}</td><td>${fields[5].value}</td><td>${fields[6].value}</td></tr>`;
+                    }
+                });
             }
-            html += '</table>';
-            preview.innerHTML += html;
+            
+            tbody += '</tbody>';
+            table.innerHTML = thead + tbody;
+            previewDiv.appendChild(table);
+            preview.appendChild(previewDiv);
+        });
+    }
+
+    // 7. Global Listeners
+    document.getElementById('addCategoryBtn').addEventListener('click', function() {
+        addCategory('', 0, [], window.currentFormVersion);
+    });
+    
+    document.getElementById('formName').addEventListener('input', updateLivePreview);
+    
+    document.getElementById('updateFormBtn').addEventListener('click', function() {
+        if(!confirm("Save changes to this form?")) return;
+
+        const formData = {
+            form_id: selectForm.value,
+            form_name: formNameEl.value,
+            academic_id: parseInt(academicSelect.value),
+            versions: window.currentFormVersion,
+            categories: [],
+            csrf_token: "<?php echo $_SESSION['csrf_token']; ?>"
+        };
+
+        document.querySelectorAll('.category').forEach(cat => {
+            const catName = cat.querySelector('.category-name').value;
+            const catPct = parseFloat(cat.querySelector('.category-percentage').value) || 0;
+            const isV1 = cat.dataset.version === 'v1';
+            const criteria = [];
+
+            cat.querySelectorAll('.criteriaTable tr').forEach(row => {
+                if(isV1) {
+                    const text = row.querySelector('.criterion-input').value;
+                    if(text) criteria.push({ criterion: text });
+                } else {
+                    const inputs = row.querySelectorAll('textarea, input');
+                    criteria.push({
+                        output: inputs[0].value, success_indicator: inputs[1].value, accomplishment: inputs[2].value,
+                        q_rating: inputs[3].value, e_rating: inputs[4].value, t_rating: inputs[5].value, a_rating: inputs[6].value
+                    });
+                }
+            });
+
+            formData.categories.push({
+                categoryName: catName,
+                categoryPercentage: catPct,
+                criteria: criteria
+            });
         });
 
-        // V1 flat table preview
-        const v1Table = document.querySelector('#v1CriteriaTable tbody');
-        if (v1Table) {
-            let html = '<h4>Criteria</h4><table class="table"><thead><tr><th>Criterion</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th></tr></thead><tbody>';
-            v1Table.querySelectorAll('tr').forEach(row => {
-                const val = row.querySelector('textarea').value;
-                html += `<tr><td>${val}</td><td></td><td></td><td></td><td></td><td></td></tr>`;
-            });
-            html += '</tbody></table>';
-            preview.innerHTML += html;
-        }
-    }
+        fetch('save_form.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData)
+        })
+        .then(r => r.json())
+        .then(res => {
+            if(res.success) {
+                toastr.success("Form updated successfully!");
+                
+                // Clear categories
+                categoriesContainer.innerHTML = '';
+
+                // Optionally reset version & formName
+                formNameEl.value = '';
+                formVersionSelect.value = '';
+                window.currentFormVersion = '2';
+                formControls.style.display = 'none';
+                formNameGroup.style.display = 'none';
+                formVersionGroup.style.display = 'none';
+
+                // Optionally reload the forms list for the selected academic period
+                academicSelect.dispatchEvent(new Event('change'));
+            } else {
+                toastr.error("Error: " + res.error);
+            }
+        })
+        .catch(err => toastr.error("Failed to save changes."));
+    });
 });
 </script>
 

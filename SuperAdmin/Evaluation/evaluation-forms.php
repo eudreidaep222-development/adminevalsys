@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="../../assets/plugins/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="../../assets/css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
 </head>
 
@@ -23,6 +24,16 @@
         <?php
         include '../../Layout Components/header.php';
         include '../../Layout Components/sidebar.php';
+        require_once '../../helper/csrftoken.php';
+        if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'super admin') {
+            header("Location: ../../index.php"); 
+            exit();
+        }
+        $activeAcademicId = null;
+        $activeResult = $conn->query("SELECT id FROM academic_list WHERE is_active = 1 LIMIT 1");
+        if ($activeResult && $activeResult->num_rows > 0) {
+            $activeAcademicId = $activeResult->fetch_assoc()['id'];
+        }
         ?>
 
         <div class="page-wrapper">
@@ -55,17 +66,25 @@
                                     </div>
 
                                     <!-- Academic Period -->
-                                    <div class="form-group">
+                                   <div class="form-group">
                                         <label for="academicSelect">Academic Period</label>
                                         <select id="academicSelect" class="form-control" required>
-                                            <option value="" disabled selected>-- Select Academic Period --</option>
+                                            <option value="" disabled <?= isset($activeAcademicId) && $activeAcademicId ? 'hidden' : 'selected' ?>>
+                                                -- Select Academic Period --
+                                            </option>
                                             <?php
                                             require_once "../../1database_conn/connection.php";
-                                            $result = $conn->query("SELECT id, school_year, semester FROM academic_list");
-                                            if($result && $result->num_rows > 0){
-                                                while($row = $result->fetch_assoc()){
-                                                    $semText = $row['semester']==1 ? "1st Semester" : ($row['semester']==2 ? "2nd Semester" : "Semester ".$row['semester']);
-                                                    echo "<option value='{$row['id']}'>{$row['school_year']} - {$semText}</option>";
+
+                                            // Get all academic periods
+                                            $result = $conn->query("SELECT id, school_year, semester, is_active FROM academic_list ORDER BY id DESC");
+
+                                            if ($result && $result->num_rows > 0) {
+                                                while ($row = $result->fetch_assoc()) {
+                                                    // Automatically select the active academic period
+                                                    $selected = ($row['is_active'] == 1) ? "selected" : "";
+                                                    $semText = $row['semester'] == 1 ? "1st Semester" : ($row['semester'] == 2 ? "2nd Semester" : "Semester ".$row['semester']);
+                                                    echo "<option value='" . htmlspecialchars($row['id']) . "' $selected>" 
+                                                        . htmlspecialchars($row['school_year']) . " - " . htmlspecialchars($semText) . "</option>";
                                                 }
                                             } else {
                                                 echo "<option value='' disabled>No academic periods found</option>";
@@ -216,8 +235,6 @@
             <?php include '../../Layout Components/footer.php'; ?>
         </div>
     </div>
-
-    <script src="../../assets/js/jquery-3.6.0.min.js"></script>
     <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
     <script src="../../assets/js/feather.min.js"></script>
     <script src="../../assets/plugins/slimscroll/jquery.slimscroll.min.js"></script>
@@ -229,6 +246,9 @@
     <script src="../../assets/js/script.js"></script>
     <script src="https://unpkg.com/boxicons@2.1.4/dist/boxicons.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/toastr.js/latest/toastr.min.js"></script>
+    <script>
+        const csrfToken = "<?php echo $_SESSION['csrf_token']; ?>";
+    </script>
 
 <script>
 let totalCategoryPercentage = 0;
@@ -258,29 +278,31 @@ function updateLivePreview() {
     const categories = [];
 
     document.querySelectorAll(".category").forEach(categoryDiv => {
-        const categoryName = categoryDiv.querySelector(".category-name").value;
-        const criteria = [];
+    const categoryName = categoryDiv.querySelector(".category-name").value;
+    const catPercentage = parseFloat(categoryDiv.querySelector(".category-percentage")?.value) || 0;
+    const criteria = [];
 
-        categoryDiv.querySelectorAll(".criteriaTable tr").forEach((row, rowIndex) => {
-            if (formVersion === "1") {
-                const input = row.querySelector(".criterion-input");
-                if (input) criteria.push({ criterion: input.value });
-            } else {
-                const fields = row.querySelectorAll("textarea, input");
-                criteria.push({
-                    output: fields[0].value,
-                    success_indicator: fields[1].value,
-                    accomplishment: fields[2].value,
-                    q_rating: parseFloat(fields[3].value) || 0,
-                    e_rating: parseFloat(fields[4].value) || 0,
-                    t_rating: parseFloat(fields[5].value) || 0,
-                    a_rating: parseFloat(fields[6].value) || 0
-                });
-            }
-        });
-
-        categories.push({ categoryName, criteria });
+    categoryDiv.querySelectorAll(".criteriaTable tr").forEach((row, rowIndex) => {
+        if (formVersion === "1") {
+            const input = row.querySelector(".criterion-input");
+            if (input) criteria.push({ criterion: input.value });
+        } else {
+            const fields = row.querySelectorAll("textarea, input");
+            criteria.push({
+                output: fields[0].value,
+                success_indicator: fields[1].value || "",
+                accomplishment: fields[2].value || "",
+                q_rating: parseFloat(fields[3].value) || 0,
+                e_rating: parseFloat(fields[4].value) || 0,
+                t_rating: parseFloat(fields[5].value) || 0,
+                a_rating: parseFloat(fields[6].value) || 0
+            });
+        }
     });
+
+    categories.push({ categoryName, categoryPercentage: catPercentage, criteria });
+});
+
 
     // Clear preview
     const previewContent = document.getElementById("previewContent");
@@ -352,7 +374,7 @@ function updateLivePreview() {
             });
 
             previewCategory.innerHTML = `
-                <h4>${category.categoryName}</h4>
+                <h4>${category.categoryName}  (${category.categoryPercentage || 0}%)</h4>
                 <table class="table table-bordered">
                     <thead>
                         <tr>
@@ -389,7 +411,6 @@ function updateLivePreview() {
     }
 
 }
-
 // Add Category Button
 document.getElementById("addCategoryBtn").addEventListener("click", function () {
     const categoryContainer = document.getElementById("categoriesContainer");
@@ -426,15 +447,15 @@ document.getElementById("addCategoryBtn").addEventListener("click", function () 
             </div>
         `;
     } else if (formVersion === "2") {
-        // Version 2: Output / Success / Accomplishment / Q/E/T/A
+        // Version 2: Output / Success / Accomplishment / Q/E/T/A + Weight
         categoryDiv.innerHTML = `
             <div class="card mt-3 category">
                 <div class="card-body">
                     <label>Category Name:</label>
                     <input type="text" class="form-control category-name" required>
-                    
+                    <label>Category Weight (%):</label>
+                    <input type="number" class="form-control category-percentage" min="0" max="100" step="1" value="0" required>
                     <button type="button" class="btn btn-rounded btn-outline-danger removeCategoryBtn mt-2">Remove Category</button>
-                    
                     <table class="table mt-3">
                         <thead>
                             <tr>
@@ -455,6 +476,14 @@ document.getElementById("addCategoryBtn").addEventListener("click", function () 
                 </div>
             </div>
         `;
+
+        // Attach percentage input handler for Version 2
+        const catPercentageInput = categoryDiv.querySelector(".category-percentage");
+        if (catPercentageInput) {
+            handleCategoryPercentageInput(catPercentageInput);
+            // Update live preview whenever weight changes
+            catPercentageInput.addEventListener("input", updateLivePreview);
+        }
     }
 
     categoryContainer.appendChild(categoryDiv);
@@ -477,18 +506,19 @@ document.getElementById("addCategoryBtn").addEventListener("click", function () 
             `;
             criteriaTable.appendChild(newRow);
 
+            // Remove row
             newRow.querySelector(".removeCriteriaBtn").addEventListener("click", function () {
                 newRow.remove();
                 updateLivePreview();
             });
 
+            // Update live preview on input
             newRow.querySelector(".criterion-input").addEventListener("input", updateLivePreview);
         };
-
         addFirstCriterion();
     }
 
-    // Add Criteria Button logic
+    // Add Criteria Button logic for both versions
     categoryDiv.querySelector(".addCriteriaBtn").addEventListener("click", function () {
         const newRow = document.createElement("tr");
         const critIndex = criteriaTable.rows.length;
@@ -506,27 +536,27 @@ document.getElementById("addCategoryBtn").addEventListener("click", function () 
             `;
         } else if (formVersion === "2") {
             newRow.innerHTML = `
-                <td><textarea class="form-control" name="output[]" required></textarea></td>
-                <td><textarea class="form-control" name="success_indicator[]" required></textarea></td>
-                <td><textarea class="form-control" name="accomplishment[]"></textarea></td>
-                <td><input type="number" class="form-control" name="q_rating[]" min="0" max="5" step="0.01" value="0"></td>
-                <td><input type="number" class="form-control" name="e_rating[]" min="0" max="5" step="0.01" value="0"></td>
-                <td><input type="number" class="form-control" name="t_rating[]" min="0" max="5" step="0.01" value="0"></td>
-                <td><input type="number" class="form-control" name="a_rating[]" min="0" max="5" step="0.01" value="0"></td>
+                <td><textarea class="form-control" required></textarea></td>
+                <td><textarea class="form-control" required></textarea></td>
+                <td><textarea class="form-control"></textarea></td>
+                <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="0"></td>
+                <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="0"></td>
+                <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="0"></td>
+                <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="0"></td>
                 <td><button type="button" class="btn btn-rounded btn-outline-danger removeCriteriaBtn">Remove</button></td>
             `;
         }
 
         criteriaTable.appendChild(newRow);
 
+        // Remove row
         newRow.querySelector(".removeCriteriaBtn").addEventListener("click", function () {
             newRow.remove();
             updateLivePreview();
         });
 
-        newRow.querySelectorAll("input, textarea").forEach(field => {
-            field.addEventListener("input", updateLivePreview);
-        });
+        // Update live preview on input
+        newRow.querySelectorAll("input, textarea").forEach(field => field.addEventListener("input", updateLivePreview));
 
         updateLivePreview();
     });
@@ -538,8 +568,73 @@ document.getElementById("addCategoryBtn").addEventListener("click", function () 
     });
 
     // Trigger live preview on all inputs in the category
-    categoryDiv.querySelectorAll("input, textarea").forEach(input => {
-        input.addEventListener("input", updateLivePreview);
+    categoryDiv.querySelectorAll("input, textarea").forEach(input => input.addEventListener("input", updateLivePreview));
+
+    updateLivePreview();
+}); 
+
+// =======================
+// Version Change Handler
+// =======================
+document.getElementById("formVersionSelect").addEventListener("change", function () {
+    const newVersion = this.value;
+    const categoryContainer = document.getElementById("categoriesContainer");
+
+    categoryContainer.querySelectorAll(".category").forEach((categoryDiv, catIndex) => {
+        const criteriaTable = categoryDiv.querySelector(".criteriaTable");
+        const oldRows = Array.from(criteriaTable.querySelectorAll("tr"));
+
+        // Save old data
+        const oldData = oldRows.map(row => {
+            const fields = row.querySelectorAll("input, textarea");
+            return [...fields].map(f => f.value);
+        });
+
+        // Clear old table
+        criteriaTable.innerHTML = "";
+
+        // Rebuild based on new version
+        oldData.forEach((rowData, rowIndex) => {
+            const newRow = document.createElement("tr");
+
+            if (newVersion == "1") {
+                // Version 1: Criterion + 5 radios
+                const critVal = rowData[0] || "";
+                newRow.innerHTML = `
+                    <td><input type="text" class="form-control criterion-input" value="${critVal}" required></td>
+                    <td><input type="radio" name="cat${catIndex}_crit${rowIndex}" value="1"></td>
+                    <td><input type="radio" name="cat${catIndex}_crit${rowIndex}" value="2"></td>
+                    <td><input type="radio" name="cat${catIndex}_crit${rowIndex}" value="3"></td>
+                    <td><input type="radio" name="cat${catIndex}_crit${rowIndex}" value="4"></td>
+                    <td><input type="radio" name="cat${catIndex}_crit${rowIndex}" value="5"></td>
+                    <td><button type="button" class="btn btn-rounded btn-outline-danger removeCriteriaBtn">Remove</button></td>
+                `;
+            } else {
+                // Version 2: Output / Success / Accomplishment / Q/E/T/A
+                newRow.innerHTML = `
+                    <td><textarea class="form-control" required>${rowData[0] || ""}</textarea></td>
+                    <td><textarea class="form-control" required>${rowData[1] || ""}</textarea></td>
+                    <td><textarea class="form-control">${rowData[2] || ""}</textarea></td>
+                    <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="${rowData[3] || 0}"></td>
+                    <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="${rowData[4] || 0}"></td>
+                    <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="${rowData[5] || 0}"></td>
+                    <td><input type="number" class="form-control" min="0" max="5" step="0.01" value="${rowData[6] || 0}"></td>
+                    <td><button type="button" class="btn btn-rounded btn-outline-danger removeCriteriaBtn">Remove</button></td>
+                `;
+            }
+
+            criteriaTable.appendChild(newRow);
+
+            // Reattach remove & input listeners
+            newRow.querySelector(".removeCriteriaBtn").addEventListener("click", function () {
+                newRow.remove();
+                updateLivePreview();
+            });
+
+            newRow.querySelectorAll("input, textarea").forEach(field => {
+                field.addEventListener("input", updateLivePreview);
+            });
+        });
     });
 
     updateLivePreview();
@@ -581,69 +676,136 @@ if (formCommentsEl) formCommentsEl.addEventListener("input", updateLivePreview);
 
 
 // Save Form
+// Save Form Logic
 document.getElementById("createFormBtn").addEventListener("click", function () {
+    
+    // 1. Get & Validate Basic Inputs
+    const formName = document.getElementById("formName").value.trim();
+    const academicSelect = document.getElementById("academicSelect");
+    const academicIdStr = academicSelect.value;
     const formVersion = document.getElementById("formVersionSelect").value;
+
+    // Stop if empty (Prevents server errors)
+    if (!formName) {
+        toastr.warning("Please enter a Form Name.", "Missing Info");
+        document.getElementById("formName").focus();
+        return;
+    }
+    if (!academicIdStr) {
+        toastr.warning("Please select an Academic Period.", "Missing Info");
+        academicSelect.focus();
+        return;
+    }
+    if (!formVersion) {
+        toastr.warning("Please select a Form Version.", "Missing Info");
+        return;
+    }
+
+    // 2. Build Data Object
     const formData = {
-        form_name: document.getElementById("formName").value,
-        academic_id: parseInt(document.getElementById("academicSelect").value),
-        version: formVersion,
+        form_name: formName,
+        academic_id: parseInt(academicIdStr),
+        versions: formVersion,
         categories: [],
-        comments: []
+        comments: [],
+        csrf_token: csrfToken // From your PHP block
     };
 
-    // ✅ Collect optional comment sections only if they exist and not empty
+    // 3. Collect Categories & Criteria
+  // 3. Collect Categories & Criteria
+    let hasValidData = false;
+
+    document.querySelectorAll(".category").forEach(categoryDiv => {
+        const categoryName = categoryDiv.querySelector(".category-name").value.trim();
+        // Skip categories without titles
+        if (!categoryName) return; 
+
+        const criteria = [];
+        const catPercentage = parseFloat(categoryDiv.querySelector(".category-percentage")?.value) || 0;
+
+        categoryDiv.querySelectorAll(".criteriaTable tr").forEach(row => {
+            if (formVersion === "1") {
+                // Version 1: Check Criterion Input
+                const input = row.querySelector(".criterion-input");
+                if (input && input.value.trim()) {
+                    criteria.push({ criterion: input.value.trim() });
+                }
+            } else {
+                // Version 2: Check Output Input
+                const fields = row.querySelectorAll("textarea, input");
+                // fields[0] is Output. Ensure it exists and has text.
+                if (fields.length > 0 && fields[0].value.trim()) {
+                    criteria.push({
+                        output: fields[0].value.trim(),
+                        success_indicator: fields[1].value.trim(),
+                        accomplishment: fields[2].value.trim(),
+                        q_rating: parseFloat(fields[3].value) || 0,
+                        e_rating: parseFloat(fields[4].value) || 0,
+                        t_rating: parseFloat(fields[5].value) || 0,
+                        a_rating: parseFloat(fields[6].value) || 0
+                    });
+                }
+            }
+        });
+
+        // Add to formData logic
+        if (criteria.length > 0 || formVersion === "2") {
+            formData.categories.push({ 
+                categoryName: categoryName,
+                categoryPercentage: catPercentage,
+                criteria: criteria 
+            });
+
+            // Update Validation Flag
+            if (formVersion === "1") {
+                // Version 1 requires at least one criterion
+                if (criteria.length > 0) hasValidData = true;
+            } else {
+                // Version 2 is considered valid if the category exists (based on your original logic)
+                hasValidData = true;
+            }
+        }
+    });
+
+    // 4. Final Validation Check (MUST BE OUTSIDE THE LOOP)
+    if (!hasValidData) {
+        toastr.warning("Please add at least one Category with Criteria.", "Incomplete Form");
+        return; // This now correctly stops the 'fetch' from happening
+    }
+
+    // 5. Collect Comments
     document.querySelectorAll(".comment-section").forEach((textarea) => {
         if (textarea && textarea.value.trim() !== "") {
             formData.comments.push(textarea.value.trim());
         }
     });
 
-    document.querySelectorAll(".category").forEach(categoryDiv => {
-        const categoryName = categoryDiv.querySelector(".category-name").value;
-        const criteria = [];
-
-        categoryDiv.querySelectorAll(".criteriaTable tr").forEach(row => {
-            if (formVersion === "1") {
-                const input = row.querySelector(".criterion-input");
-                if (input) criteria.push({ criterion: input.value });
-            } else {
-                const fields = row.querySelectorAll("textarea, input");
-                criteria.push({
-                    output: fields[0].value,
-                    success_indicator: fields[1].value,
-                    accomplishment: fields[2].value,
-                    q_rating: parseFloat(fields[3].value) || 0,
-                    e_rating: parseFloat(fields[4].value) || 0,
-                    t_rating: parseFloat(fields[5].value) || 0,
-                    a_rating: parseFloat(fields[6].value) || 0
-                });
-            }
-        });
-
-        formData.categories.push({ categoryName, criteria });
-    });
-
+    // 6. Send to Server
     fetch("save_form.php", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData)
     })
     .then(response => response.json())
-    // FIX_SNIPPET_SAVE_FORM
     .then(data => {
         if (data.success) {
-            toastr.success("Form successfully created!", "Success", { closeButton: true, tapToDismiss: false });
-            // Instead of window.location.reload(), just clear form and preview
+            toastr.success("Form successfully created!", "Success");
+            
+            // Reset Form & Preview
             document.getElementById("evaluationForm").reset();
             document.getElementById("categoriesContainer").innerHTML = '';
             document.getElementById("previewContent").innerHTML = '';
+            
+            // Reset Dropdowns specifically (sometimes .reset() misses these)
+            $('#academicSelect').val('');
+            $('#formVersionSelect').val('');
         } else {
-            toastr.error("Error: " + data.error, "Error", { closeButton: true, tapToDismiss: false });
+            toastr.error(data.error || "An error occurred.", "Error");
         }
     })
     .catch(error => {
         console.error("Fetch error:", error);
-        toastr.error("An unexpected error occurred.", "Error", { closeButton: true, tapToDismiss: false });
+        toastr.error("Server connection failed.", "Error");
     });
 });
 
@@ -656,6 +818,56 @@ document.getElementById("createNewFormBtn").addEventListener("click", function (
     toastr.info("New form ready.", "Info", { closeButton: true, tapToDismiss: false });
 });
 
+// Percentage Tracker 
+function handleCategoryPercentageInput(input) {
+    input.addEventListener("input", function () {
+        const rawValue = input.value.trim();
+
+        // If empty, allow typing
+        if (rawValue === "") {
+            updateLivePreview();
+            return;
+        }
+
+        // Only allow numbers
+        if (isNaN(rawValue)) {
+            toastr.warning("Please input a valid number for category weight.");
+            input.value = ""; // Clear invalid input
+            updateLivePreview();
+            return;
+        }
+
+        let numValue = parseFloat(rawValue);
+
+        if (numValue < 0) {
+            toastr.warning("Percentage cannot be negative. Resetting to 0.", "Invalid Input");
+            input.value = "0";
+            numValue = 0;
+        }
+
+        // Calculate total excluding current input
+        const allPercentages = Array.from(document.querySelectorAll(".category-percentage"));
+        let totalOther = 0;
+        allPercentages.forEach(p => {
+            if (p !== input) totalOther += parseFloat(p.value) || 0;
+        });
+
+        // If total exceeds 100, limit current value
+        if (totalOther + numValue > 100) {
+            const maxPossible = 100 - totalOther;
+            toastr.warning(`Total percentage cannot exceed 100%. Max allowed: ${maxPossible.toFixed(2)}%.`, "Warning");
+            input.value = maxPossible.toFixed(2);
+        }
+
+        updateLivePreview();
+    });
+
+    // On blur, fix formatting to 2 decimals
+    input.addEventListener("blur", function () {
+        if (input.value !== "") input.value = parseFloat(input.value).toFixed(2);
+        updateLivePreview();
+    });
+}
 </script>
 
 <script>

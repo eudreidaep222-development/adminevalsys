@@ -13,20 +13,37 @@ $assignment_id = isset($_GET['assignment_id']) ? intval($_GET['assignment_id']) 
 $evaluatee = null;
 
 if ($assignment_id > 0) {
-  $stmt = $conn->prepare("
-    SELECT u.fullName, d.department_name, ea.id AS assignment_id
-    FROM evaluation_assignments ea
-    INNER JOIN users u ON ea.evaluatee_id = u.id
-    LEFT JOIN departments d ON u.department_id = d.id
-    WHERE ea.id = ? AND ea.evaluator_id = ?
-  ");
-  $stmt->bind_param("ii", $assignment_id, $_SESSION['user_id']);
-  $stmt->execute();
-  $result = $stmt->get_result();
-  if ($result && $result->num_rows > 0) {
-    $evaluatee = $result->fetch_assoc();
-  }
-  $stmt->close();
+    $stmt = $conn->prepare("
+        SELECT 
+            -- Replace u.fullName with the CONCAT function
+            CONCAT(
+                u.first_name, 
+                ' ', 
+                IF(u.middle_name IS NOT NULL AND u.middle_name != '', CONCAT(SUBSTRING(u.middle_name, 1, 1), '. '), ''), 
+                u.last_name
+            ) AS fullName,
+            d.department_name, 
+            ea.id AS assignment_id
+        FROM evaluation_assignments ea
+        INNER JOIN users u ON ea.evaluatee_id = u.id
+        LEFT JOIN departments d ON u.department_id = d.id
+        WHERE ea.id = ? AND ea.evaluator_id = ?
+    ");
+    
+    // Check if preparation succeeded before binding/executing
+    if ($stmt === false) {
+        // Handle error: log or display $conn->error
+        die('Prepare failed: ' . htmlspecialchars($conn->error)); 
+    }
+
+    $stmt->bind_param("ii", $assignment_id, $_SESSION['user_id']);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result && $result->num_rows > 0) {
+        $evaluatee = $result->fetch_assoc();
+    }
+    $stmt->close();
 }
 
 // Fetch academic list for Step 1
@@ -76,9 +93,7 @@ $academics = $conn->query("SELECT id, semester, school_year, is_default
     <div class="alert alert-danger">
       Invalid evaluation assignment. Please go back to dashboard.
     </div>
-    <?php exit; ?>
   <?php endif; ?>
-
 
     <div class="row">
       <div class="col-lg-12">
@@ -111,12 +126,22 @@ $academics = $conn->query("SELECT id, semester, school_year, is_default
                   <div class="mb-3">
                     <label class="form-label">Academic Year / Semester</label>
                     <select id="academicSelect" class="form-control" required>
-                      <option value="" disabled selected>-- Select Academic Period --</option>
-                      <?php while($a = $academics->fetch_assoc()): ?>
-                        <option value="<?= $a['id']; ?>"><?= htmlspecialchars($a['semester'].' - '.$a['school_year']); ?></option>
-                      <?php endwhile; ?>
+                        <option value="" disabled>-- Select Academic Period --</option>
+                        <?php 
+                        // Reset pointer in case $academics was used previously
+                        if ($academics && $academics->num_rows > 0) {
+                            $academics->data_seek(0);
+                        }
+                        while($a = $academics->fetch_assoc()): 
+                            // Check if this semester is the active one
+                            $isActive = ($a['is_active'] == 1) ? 'selected' : '';
+                        ?>
+                        <option value="<?= $a['id']; ?>" <?= $isActive; ?>>
+                            <?= htmlspecialchars($a['semester'].' - '.$a['school_year']); ?>
+                        </option>
+                        <?php endwhile; ?>
                     </select>
-                  </div>
+                </div>
                   <ul class="pager wizard twitter-bs-wizard-pager-link">
                     <li class="next"><a href="javascript:void(0);" class="btn btn-primary">Next</a></li>
                   </ul>
@@ -269,67 +294,135 @@ $(function(){
     buildStep4Preview();
   });
 
-  // ---------- Build Step 4 preview (category card style) ----------
-  function buildStep4Preview(){
+// ---------- Build Step 4 Preview (Fixed & Labeled) ----------
+function buildStep4Preview(){
     const academicText = $('#academicSelect option:selected').text() || "N/A";
     const formText = $('#formSelect option:selected').text() || "N/A";
     const previewContent = document.getElementById("previewContent");
 
-    // Basic header
+    // 1. Header Info
     let html = `
-      <h5><strong>Academic Period:</strong> ${escapeHtml(academicText)}</h5>
-      <h5><strong>Form:</strong> ${escapeHtml(formText)}</h5>
+      <div class="mb-3">
+          <h5><strong>Academic Period:</strong> ${escapeHtml(academicText)}</h5>
+          <h5><strong>Form:</strong> ${escapeHtml(formText)}</h5>
+      </div>
       <hr/>
     `;
 
-    // If there are no categories loaded, show message
+    // 2. Check for Content
     if($('#criteriaContainer').children().length === 0){
       html += '<div class="alert alert-info">No criteria loaded yet.</div>';
       previewContent.innerHTML = html;
       return;
     }
 
-    // The server renders each category as a .card in #criteriaContainer
+    // 3. Loop Categories
     $('#criteriaContainer .card').each(function(){
-      // read header strong text (format: "CategoryName (XX%)" as load_form_criteria.php emits)
-      const headerText = $(this).find('.card-header').text().trim();
-      // find the table inside this card
-      const $table = $(this).find('table').first();
+        const headerText = $(this).find('.card-header').text().trim();
+        const $tableBody = $(this).find('tbody');
+        
+        // Detect Version: If we find radio buttons, it's Version 1.
+        const isVersion1 = $tableBody.find('input[type="radio"]').length > 0;
 
-      html += `<div class="mb-3"><h4>${escapeHtml(headerText)}</h4>`;
-      html += `<div class="table-responsive"><table class="table table-bordered"><thead>
-                <tr>
-                  <th>Output</th><th>Success Indicator</th><th>Actual Accomplishment</th>
-                  <th style="width:50px;">Q</th><th style="width:50px;">E</th><th style="width:50px;">T</th><th style="width:50px;">A</th>
-                </tr></thead><tbody>`;
+        html += `<div class="mb-4">
+                    <h5 class="text-primary">${escapeHtml(headerText)}</h5>`;
 
-      $table.find('tbody tr').each(function(){
-        // find textareas and inputs in the same order as in load_form_criteria.php
-        const $cells = $(this).find('textarea, input');
+        if (isVersion1) {
+            // --- VERSION 1: Radio Buttons (Qualitative) ---
+            html += `
+            <div class="table-responsive">
+                <table class="table table-bordered table-sm table-striped">
+                    <thead class="bg-light text-center align-middle">
+                        <tr>
+                            <th style="width: 40%; text-align: left;">Criterion</th>
+                            <th style="width: 12%;">1<br><small class="text-muted">Strongly Disagree</small></th>
+                            <th style="width: 12%;">2<br><small class="text-muted">Disagree</small></th>
+                            <th style="width: 12%;">3<br><small class="text-muted">Neutral</small></th>
+                            <th style="width: 12%;">4<br><small class="text-muted">Agree</small></th>
+                            <th style="width: 12%;">5<br><small class="text-muted">Strongly Agree</small></th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
 
-        // protect against missing cells (use empty string or 0)
-        const output = $cells.eq(0).val() || '';
-        const successIndicator = $cells.eq(1).val() || '';
-        const accomplishment = $cells.eq(2).val() || '';
-        const q = parseInt($cells.eq(3).val(),10) || 0;
-        const e = parseInt($cells.eq(4).val(),10) || 0;
-        const t = parseInt($cells.eq(5).val(),10) || 0;
-        const a = Math.round((q + e + t) / 3);
+            $tableBody.find('tr').each(function(){
+                // Fix: Read text directly from the first cell
+                const criterionText = $(this).find('td').eq(0).text().trim();
+                const rating = $(this).find('input[type="radio"]:checked').val();
+                
+                // Helper to create checkmarks in the right column
+                const getCell = (val) => {
+                    return rating == val 
+                        ? `<td class="text-center bg-success text-white fw-bold"><i class="fa fa-check"></i></td>` 
+                        : `<td class="text-center text-muted">-</td>`;
+                };
 
-        html += `<tr>
-                  <td>${escapeHtml(output)}</td>
-                  <td>${escapeHtml(successIndicator)}</td>
-                  <td>${escapeHtml(accomplishment)}</td>
-                  <td>${q}</td><td>${e}</td><td>${t}</td><td>${a}</td>
-                </tr>`;
-      });
+                html += `<tr>
+                            <td>${escapeHtml(criterionText)}</td>
+                            ${getCell(1)}
+                            ${getCell(2)}
+                            ${getCell(3)}
+                            ${getCell(4)}
+                            ${getCell(5)}
+                         </tr>`;
+            });
+            html += `</tbody></table></div>`;
 
-      html += `</tbody></table></div></div>`;
+        } else {
+            // --- VERSION 2: Q/E/T/A (Quantitative) ---
+            html += `
+            <div class="table-responsive">
+                <table class="table table-bordered table-sm">
+                    <thead class="bg-light align-middle">
+                        <tr>
+                            <th rowspan="2">Output</th>
+                            <th rowspan="2">Success Indicator</th>
+                            <th rowspan="2">Actual Accomplishment</th>
+                            <th colspan="4" class="text-center">Rating</th>
+                        </tr>
+                        <tr>
+                            <th class="text-center" style="width:40px;">Q</th>
+                            <th class="text-center" style="width:40px;">E</th>
+                            <th class="text-center" style="width:40px;">T</th>
+                            <th class="text-center" style="width:40px;">A</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            $tableBody.find('tr').each(function(){
+                // Try to read textarea vals (if inputs) OR text (if static)
+                let output = $(this).find('textarea').eq(0).val(); 
+                if(!output) output = $(this).find('td').eq(0).text(); // Fallback for text mode
+
+                let success = $(this).find('textarea').eq(1).val();
+                if(!success) success = $(this).find('td').eq(1).text();
+
+                let accom = $(this).find('textarea').eq(2).val(); 
+                if(!accom) accom = $(this).find('td').eq(2).text(); // Fallback if taking mode doesn't have input here
+
+                // Ratings
+                const q = $(this).find('.q-input').val() || '-';
+                const e = $(this).find('.e-input').val() || '-';
+                const t = $(this).find('.t-input').val() || '-';
+                const a = $(this).find('.a-input').val() || '-';
+
+                html += `<tr>
+                            <td>${escapeHtml(output)}</td>
+                            <td>${escapeHtml(success)}</td>
+                            <td>${escapeHtml(accom)}</td>
+                            <td class="text-center">${q}</td>
+                            <td class="text-center">${e}</td>
+                            <td class="text-center">${t}</td>
+                            <td class="text-center fw-bold bg-light">${a}</td>
+                         </tr>`;
+            });
+            html += `</tbody></table></div>`;
+        }
+
+        html += `</div>`;
     });
 
     previewContent.innerHTML = html;
-  }
-
+}
   // simple HTML escape to avoid accidental HTML injection in preview
   function escapeHtml(str){
     if(!str) return '';
@@ -359,56 +452,66 @@ $(function(){
   }
 
   // Validation for Next Step button
-  $(document).on('click', '.twitter-bs-wizard-pager-link .next', function(e){
-    e.preventDefault();
+// Validation for Next Step button
+$(document).on('click', '.twitter-bs-wizard-pager-link .next', function(e){
+    // Don't prevent default immediately, let wizard handle it unless we return false
+    
     let $active = $('.tab-content .tab-pane.active');
     let id = $active.attr('id');
 
+    // Step 1 Validation
     if(id === 'step1'){
-      if(!$('#academicSelect').val()){
-        toastr.warning('Please select an Academic Period before proceeding.');
-        return false;
-      }
+        if(!$('#academicSelect').val()){
+            toastr.warning('Please select an Academic Period before proceeding.');
+            return false;
+        }
     } 
+    // Step 2 Validation
     else if(id === 'step2'){
-      if(!$('#formSelect').val()){
-        toastr.warning('Please select an Evaluation Form before proceeding.');
-        return false;
-      }
+        if(!$('#formSelect').val()){
+            toastr.warning('Please select an Evaluation Form before proceeding.');
+            return false;
+        }
     } 
+    // Step 3 Validation (CRITERIA)
     else if(id === 'step3'){
-      let invalid = false;
-      $active.find('tr').each(function(){
-        if($(this).find('.q-input').length === 0) return true;
+        let invalid = false;
+        let message = 'Please answer all questions before proceeding.';
 
-        let q = $(this).find('.q-input').val();
-        let e = $(this).find('.e-input').val();
-        let t = $(this).find('.t-input').val();
+        $active.find('tbody tr').each(function(){
+            const $row = $(this);
 
-        if(q === '' || e === '' || t === ''){
-          invalid = true; return false;
+            // 1. Check for Version 2 Inputs (Q/E/T)
+            if ($row.find('.q-input').length > 0) {
+                let q = $row.find('.q-input').val();
+                let eVal = $row.find('.e-input').val();
+                let tVal = $row.find('.t-input').val();
+
+                if(q === '' || eVal === '' || tVal === '' ||
+                   isNaN(q) || isNaN(eVal) || isNaN(tVal) ||
+                   q < 0 || q > 5 || eVal < 0 || eVal > 5 || tVal < 0 || tVal > 5){
+                    invalid = true;
+                    message = 'Please complete all rating fields (0-5).';
+                    return false; // break loop
+                }
+            }
+            // 2. Check for Version 1 Inputs (Radio Buttons)
+            else if ($row.find('input[type="radio"]').length > 0) {
+                // Check if ANY radio button in this group is checked
+                if ($row.find('input[type="radio"]:checked').length === 0) {
+                    invalid = true;
+                    message = 'Please select a rating for all criteria.';
+                    return false; // break loop
+                }
+            }
+        });
+
+        if(invalid){
+            toastr.warning(message);
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
         }
-        if(isNaN(q) || isNaN(e) || isNaN(t) ||
-           q < 0 || q > 5 || e < 0 || e > 5 || t < 0 || t > 5){
-          invalid = true; return false;
-        }
-      });
-
-      if(invalid){
-        toastr.warning('Please complete all criteria fields (values 0–5) before proceeding.');
-        return false;
-      }
-    }
-
-    // If passed validation, advance wizard
-    if(typeof $('#progrss-wizard').bootstrapWizard === 'function'){
-      $('#progrss-wizard').bootstrapWizard('next');
-    } else {
-      // fallback: move to next tab manually
-      let nextId = $active.next('.tab-pane').attr('id');
-      if(nextId){
-        $(`a[href="#${nextId}"]`).tab('show');
-      }
     }
   });
 
@@ -475,27 +578,73 @@ $(function(){
     }
   });
 
-  $('#submitEvaluation').on('click', function () {
+  // Handle Submit Button
+$('#submitEvaluation').on('click', function () {
     const academicId = $('#academicSelect').val();
     const formId = $('#formSelect').val();
-    const assignmentId = <?= $assignment_id ?>;
+    // Ensure assignmentId is printed as a number or 0 if missing
+    const assignmentId = <?= $assignment_id ? $assignment_id : 0 ?>;
 
-    // Collect criteria data from step3
     let criteria = [];
-    $('#criteriaContainer tbody tr').each(function(){
-        if($(this).find('.q-input').length === 0) return true;
+    let missingAnswers = false;
 
-        criteria.push({
-            output: $(this).find('textarea').eq(0).val(),
-            success_indicator: $(this).find('textarea').eq(1).val(),
-            accomplishment: $(this).find('textarea').eq(2).val(),
-            q: $(this).find('.q-input').val(),
-            e: $(this).find('.e-input').val(),
-            t: $(this).find('.t-input').val(),
-            a: $(this).find('.a-input').val()
-        });
+    // Iterate through all rows in the table
+    $('#criteriaContainer tbody tr').each(function(){
+        const $row = $(this);
+        
+        // Check 1: Is it a Version 2 Row? (Has .q-input)
+        if($row.find('.q-input').length > 0) {
+            criteria.push({
+                // For V2, we usually send the text values plus the ratings
+                output: $row.find('textarea').eq(0).val(),
+                success_indicator: $row.find('textarea').eq(1).val(),
+                accomplishment: $row.find('textarea').eq(2).val(),
+                q: $row.find('.q-input').val(),
+                e: $row.find('.e-input').val(),
+                t: $row.find('.t-input').val(),
+                a: $row.find('.a-input').val(),
+                // Try to find an ID if it exists in a hidden input, otherwise backend matches by order
+                id: $row.find('input[type="hidden"]').val() 
+            });
+        }
+        // Check 2: Is it a Version 1 Row? (Has Radio Buttons)
+        else if ($row.find('input[type="radio"]').length > 0) {
+            const $checked = $row.find('input[type="radio"]:checked');
+            
+            if($checked.length === 0) {
+                missingAnswers = true;
+                return false; // Stop loop, show error
+            }
+
+            // Extract Question ID from the name "criterion_123"
+            const nameAttr = $row.find('input[type="radio"]').attr('name'); 
+            const questionId = nameAttr ? nameAttr.split('_')[1] : null;
+
+            criteria.push({
+                question_id: questionId, // Send the ID so backend knows which question this is
+                rating: $checked.val(),
+                // Fallback: send the text just in case backend needs it
+                output: $row.find('td').first().text().trim() 
+            });
+        }
     });
 
+    // Validation Checks
+    if (missingAnswers) {
+        toastr.warning('Please answer all questions before submitting.');
+        return;
+    }
+
+    if (criteria.length === 0) {
+        toastr.error('No data found. Please ensure the form is loaded.');
+        return;
+    }
+
+    // Disable button to prevent double-submit
+    const $btn = $(this);
+    $btn.prop('disabled', true).text('Submitting...');
+
+    // Send to Server
     $.post('submit_evaluation.php', {
         assignment_id: assignmentId,
         form_id: formId,
@@ -504,15 +653,18 @@ $(function(){
     }, function(res){
         if(res.success){
             toastr.success(res.message);
-            setTimeout(()=> window.location.href="home.php", 1500);
+            // Redirect after success
+            setTimeout(()=> window.location.href = "home.php", 1500);
         } else {
-            toastr.error(res.message);
+            toastr.error(res.message || "An error occurred");
+            $btn.prop('disabled', false).text('Submit Evaluation');
         }
-    }, 'json').fail(function(){
-        toastr.error('Submission failed, please try again.');
+    }, 'json')
+    .fail(function(){
+        toastr.error('Server connection failed.');
+        $btn.prop('disabled', false).text('Submit Evaluation');
     });
 });
-
 
 });
 </script>
